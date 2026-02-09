@@ -46,12 +46,7 @@ jobs:
           if command -v pytest >/dev/null 2>&1; then
             pytest -q || true
           fi
-
-      - name: Run linters (flake8 if present)
-        run: |
-          if command -v flake8 >/dev/null 2>&1; then
-            flake8 || true
-          fi
+      # flake8 already run above in "Run flake8" step; avoid duplicate execution.
 
   create-pr:
     name: Create Pull Request
