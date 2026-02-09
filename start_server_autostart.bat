@@ -8,8 +8,12 @@ set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
 REM Kill all python processes to ensure clean start (best-effort)
-echo Stopping existing python processes...
-taskkill /F /IM python.exe >nul 2>&1
+echo Stopping processes listening on port 5000 (safer)...
+REM Find PIDs that are listening on port 5000 and kill only those.
+for /f "tokens=5" %%A in ('netstat -ano ^| findstr ":5000"') do (
+    echo Stopping process PID %%A listening on port 5000...
+    taskkill /PID %%A /F >nul 2>&1
+)
 
 REM Wait and ensure port 5000 is free (retry)
 set RETRIES=6

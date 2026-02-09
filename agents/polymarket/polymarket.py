@@ -11,7 +11,12 @@ from dotenv import load_dotenv
 
 from web3 import Web3
 from web3.constants import MAX_INT
-from web3.middleware import geth_poa_middleware
+try:
+    # web3<7
+    from web3.middleware import geth_poa_middleware
+except ImportError:
+    # web3>=7
+    from web3.middleware import ExtraDataToPOAMiddleware as geth_poa_middleware
 
 import httpx
 from py_clob_client.client import ClobClient

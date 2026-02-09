@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
 import json
+import os
 from pathlib import Path
 
+
+def _paper_trades_path() -> Path:
+    """Resolve paper_trades.jsonl path.
+
+    Priority:
+    1. Environment variable PAPER_TRADES_PATH or PAPER_TRADES_FILE
+    2. Relative path at repo root: ../paper_trades.jsonl
+    """
+    env = os.getenv("PAPER_TRADES_PATH") or os.getenv("PAPER_TRADES_FILE")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parent.parent / "paper_trades.jsonl"
+
+
 def main():
-    path = Path("c:/Users/sefa1/agents/paper_trades.jsonl")
+    path = _paper_trades_path()
     if not path.exists():
         print("no_data")
         return
