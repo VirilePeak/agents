@@ -220,6 +220,9 @@ async def startup_event():
         rehydrated_count = rehydrate_paper_trades()
         if rehydrated_count > 0:
             logger.info(f"Rehydrated {rehydrated_count} active paper trades into PositionManager")
+        cleaned_file_orphans = cleanup_orphan_paper_trades()
+        if cleaned_file_orphans > 0:
+            logger.warning(f"ORPHAN FILE CLEANUP: Closed {cleaned_file_orphans} trades on startup")
     
     # Orphan Cleanup Task (closes old open trades)
     async def orphan_cleanup_task():
@@ -347,10 +350,30 @@ async def startup_event():
             except Exception as e:
                 logger.error(f"Orphan cleanup task error: {e}")
     
+    async def orphan_file_cleanup_task():
+        """Background task to close file-only orphan trades."""
+        if not settings.ORPHAN_CLEANUP_ENABLED:
+            logger.debug("Orphan file cleanup task disabled")
+            return
+
+        poll_interval = 120.0  # Check every 2 minutes
+        while True:
+            try:
+                await asyncio.sleep(poll_interval)
+                if not is_paper_trading():
+                    continue
+                cleanup_orphan_paper_trades()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Orphan file cleanup task error: {e}")
+
         # Start orphan cleanup task
         if settings.ORPHAN_CLEANUP_ENABLED:
             asyncio.create_task(orphan_cleanup_task())
             logger.info("Orphan cleanup task started")
+        asyncio.create_task(orphan_file_cleanup_task())
+        logger.info("Orphan file cleanup task started")
         
         # Start signal ID cache cleanup task
         asyncio.create_task(signal_id_cache_cleanup_task())
@@ -2130,8 +2153,9 @@ def get_open_trades_file_count() -> int:
         path = Path(log_path)
         if not path.exists():
             return 0
-        
-        open_trade_ids = set()
+
+        # Track latest status per trade_id (last entry wins)
+        status_by_id = {}
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -2141,14 +2165,91 @@ def get_open_trades_file_count() -> int:
                     trade = json.loads(line)
                     trade_id = trade.get("trade_id")
                     status = trade.get("status")
-                    if trade_id and status != "closed":
-                        open_trade_ids.add(trade_id)
+                    if trade_id:
+                        status_by_id[trade_id] = status
                 except json.JSONDecodeError:
                     continue
-        
+
+        open_trade_ids = {
+            trade_id
+            for trade_id, status in status_by_id.items()
+            if status != "closed"
+        }
         return len(open_trade_ids)
     except Exception as e:
         logger.warning(f"Failed to count open trades in file: {e}")
+        return 0
+
+
+def cleanup_orphan_paper_trades() -> int:
+    """Close paper trades that exist only in file (not in RAM)."""
+    if not is_paper_trading():
+        return 0
+    try:
+        log_path = settings.PAPER_LOG_PATH
+        path = Path(log_path)
+        if not path.exists():
+            return 0
+
+        # Build latest entry per trade_id to find open trades
+        latest_by_id = {}
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    trade = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                trade_id = trade.get("trade_id")
+                if not trade_id:
+                    continue
+                latest_by_id[trade_id] = trade
+
+        # Active trades in RAM
+        pm = get_position_manager()
+        from agents.application.position_manager import TradeStatus
+        active_ids = set(
+            t.trade_id
+            for t in pm.active_trades.values()
+            if t.status in (
+                TradeStatus.PENDING,
+                TradeStatus.CONFIRMED,
+                TradeStatus.ADDED,
+                TradeStatus.HEDGED,
+            )
+            and not t.exited
+        )
+
+        closed_count = 0
+        for trade_id, trade in latest_by_id.items():
+            status = trade.get("status")
+            if status == "closed":
+                continue
+            if trade_id in active_ids:
+                continue
+            entry_price = trade.get("entry_price")
+            if entry_price is None:
+                logger.warning(
+                    f"ORPHAN FILE CLEANUP: Trade {trade_id} missing entry_price; cannot close safely."
+                )
+                continue
+            if update_paper_trade_close(
+                log_path=log_path,
+                trade_id=trade_id,
+                realized_pnl=None,
+                exit_price=float(entry_price),
+                exit_reason="orphan_file_cleanup",
+                exit_time_utc=utc_now_iso(),
+            ):
+                closed_count += 1
+
+        if closed_count > 0:
+            logger.info(f"ORPHAN FILE CLEANUP: Closed {closed_count} orphan file trades")
+        return closed_count
+    except Exception as e:
+        logger.warning(f"ORPHAN FILE CLEANUP: failed ({e})")
         return 0
 
 @app.get("/metrics/risk")
@@ -3385,7 +3486,16 @@ def webhook(payload: WebhookPayload):
             )
         
         logger.info(f"[{request_id}] RAW PAYLOAD: {data}")
-        logger.info(f"[{request_id}] SIGNAL_ID: {signal_id_for_logging} | SOURCE: {source_for_persistence} | MODE: {mode} (TradingView signal tracking)")
+        is_test_signal = False
+        test_prefix = getattr(settings, "TEST_SIGNAL_PREFIX", "test_") or "test_"
+        if isinstance(signal_id_for_logging, str) and signal_id_for_logging.startswith(test_prefix):
+            is_test_signal = True
+
+        signal_kind = "TEST" if is_test_signal else "LIVE"
+        logger.info(
+            f"[{request_id}] SIGNAL_ID: {signal_id_for_logging} | SOURCE: {source_for_persistence} | "
+            f"MODE: {mode} | KIND: {signal_kind} (TradingView signal tracking)"
+        )
 
         # Robustes Parsing und Normalisierung
         # Note: sig_for_dedupe was already parsed above for dedupe check
@@ -3546,6 +3656,22 @@ def webhook(payload: WebhookPayload):
             ])
             orphan_trades_count = max(0, open_trades_file_count - open_trades_ram_count)
             
+            if orphan_trades_count > 0 and settings.ORPHAN_CLEANUP_ENABLED:
+                cleaned = cleanup_orphan_paper_trades()
+                if cleaned > 0:
+                    open_trades_file_count = get_open_trades_file_count()
+                    open_trades_ram_count = len([
+                        t for t in pm.active_trades.values()
+                        if t.status in (
+                            TradeStatus.PENDING,
+                            TradeStatus.CONFIRMED,
+                            TradeStatus.ADDED,
+                            TradeStatus.HEDGED,
+                        )
+                        and not t.exited
+                    ])
+                    orphan_trades_count = max(0, open_trades_file_count - open_trades_ram_count)
+
             if orphan_trades_count > 0:
                 logger.warning(
                     f"[{request_id}] BLOCKED: Health degraded - {orphan_trades_count} orphan trades detected "
