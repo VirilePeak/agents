@@ -126,6 +126,13 @@ class PositionManager:
             
             # Restore market locks
             self.market_locks = data.get("market_locks", {})
+            # Restore idempotency and cooldowns (stored as wall-clock timestamps)
+            self.action_idempotency = {
+                k: float(v) for k, v in data.get("action_idempotency", {}).items()
+            }
+            self.action_cooldowns = {
+                k: float(v) for k, v in data.get("action_cooldowns", {}).items()
+            }
             
             logger.info(f"Loaded state: {len(self.market_locks)} market locks")
         except Exception as e:
@@ -144,8 +151,18 @@ class PositionManager:
         # Debounce: only save if enough time has passed or forced
         if force or (now - self._last_save_time) >= self._save_debounce_seconds:
             try:
+                # Ensure idempotency/cooldown maps are pruned before saving
+                try:
+                    self._cleanup_old_idempotency()
+                except Exception:
+                    # Non-fatal: continue saving even if cleanup fails
+                    pass
+
                 state = {
                     "market_locks": self.market_locks,
+                    # Persist idempotency and cooldown maps as wall-clock epoch seconds
+                    "action_idempotency": self.action_idempotency,
+                    "action_cooldowns": self.action_cooldowns,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 with open(self.state_file, "w") as f:
@@ -295,7 +312,8 @@ class PositionManager:
     
     def _cleanup_old_idempotency(self) -> None:
         """Remove idempotency entries older than TTL."""
-        now = time.monotonic()
+        # Use wall-clock time for idempotency persistence so entries survive restarts
+        now = time.time()
         cutoff = now - self.idempotency_ttl_seconds
         
         # Remove old entries
@@ -326,14 +344,16 @@ class PositionManager:
         if action_id not in self.action_cooldowns:
             return False
         
-        elapsed = time.monotonic() - self.action_cooldowns[action_id]
+        # action_cooldowns store wall-clock epoch seconds
+        elapsed = time.time() - self.action_cooldowns[action_id]
         if elapsed < self.action_cooldown_seconds:
             return True
         return False
     
     def mark_action_processed(self, action_id: str) -> None:
         """Mark action as processed and update cooldown."""
-        now = time.monotonic()
+        # Use wall-clock epoch time so that persisted idempotency survives restarts
+        now = time.time()
         self.action_idempotency[action_id] = now  # Store timestamp for TTL cleanup
         self.action_cooldowns[action_id] = now
     
