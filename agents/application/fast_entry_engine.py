@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Callable, Dict, Any, List
 from datetime import datetime, timezone
 import json
+import httpx
 
 from agents.polymarket.polymarket import Polymarket
-from agents.application.position_manager import PositionManager, ActiveTrade
+from agents.application.position_manager import PositionManager, ActiveTrade, TradeAction
 from agents.application.latency_stats import LatencyStats
 from src.utils.logger import get_logger
 from src.utils.exceptions import APIError, BotError
@@ -246,6 +247,12 @@ class FastEntryEngine:
         current = history[-1]
         baseline = history[0]  # Oldest in window
         
+        # Avoid division by zero if baseline mid_price is zero (valid but rare for probability prices).
+        # If baseline is zero we cannot compute a meaningful percentage drop, so skip detection.
+        if baseline.mid_price <= 0.0:
+            logger.debug(f"Baseline mid_price is zero for {token_id}, skipping dislocation detection")
+            return None
+
         # Calculate price drop percentage
         price_drop_pct = ((baseline.mid_price - current.mid_price) / baseline.mid_price) * 100.0
         
@@ -264,8 +271,10 @@ class FastEntryEngine:
         if speed_ratio < self.speed_ratio_threshold:
             return None  # Not fast enough
         
-        # Determine side: if price dropped, buy (expecting bounce)
-        side = "UP" if "up" in token_id.lower() or current.mid_price < baseline.mid_price else "DOWN"
+        # Determine side: if price dropped, buy (expecting bounce).
+        # Use price movement only — do not rely on substring matches in token_id,
+        # which may produce false positives (e.g. token IDs containing "up" in other words).
+        side = "UP" if current.mid_price < baseline.mid_price else "DOWN"
         
         t_detect = self._monotonic_ms()
         
@@ -540,11 +549,8 @@ class FastEntryEngine:
     async def _get_active_market_tokens(self) -> List[str]:
         """Get token IDs for active 15m markets."""
         try:
-            # Use connection pooling for better performance
-            client = self.polymarket._get_http_client()
-            
-            # Fetch markets from Gamma API
-            response = client.get(
+            # Fetch markets from Gamma API (use httpx directly)
+            response = httpx.get(
                 f"{self.polymarket.gamma_url}/markets",
                 params={"active": "true", "closed": "false"},
                 timeout=5
@@ -610,6 +616,9 @@ class FastEntryEngine:
         tokens = await self._get_active_market_tokens()
         logger.info(f"Monitoring {len(tokens)} tokens")
         
+        # Ensure cleanup_task is always defined so finally blocks can safely cancel it
+        cleanup_task = None
+        
         # WebSocket mode: use real-time updates
         if self.use_websocket and self.ws_client:
             logger.info("Using WebSocket for real-time price updates (lower latency)")
@@ -653,8 +662,20 @@ class FastEntryEngine:
             except Exception as e:
                 logger.error(f"Engine error: {e}")
             finally:
+                # Stop websocket client if running
                 if self.ws_client:
-                    await self.ws_client.stop()
+                    try:
+                        await self.ws_client.stop()
+                    except Exception:
+                        logger.exception("Error stopping ws_client")
+                # Ensure cleanup task is cancelled
+                if cleanup_task is not None:
+                    cleanup_task.cancel()
+                    try:
+                        await cleanup_task
+                    except asyncio.CancelledError:
+                        pass
+                self.running = False
         
         else:
             # REST polling mode (fallback)
@@ -672,9 +693,14 @@ class FastEntryEngine:
                 logger.info("Engine stopped")
             except Exception as e:
                 logger.error(f"Engine error: {e}")
-        finally:
-            self.running = False
-            cleanup_task.cancel()
+            finally:
+                self.running = False
+                if cleanup_task is not None:
+                    cleanup_task.cancel()
+                    try:
+                        await cleanup_task
+                    except asyncio.CancelledError:
+                        pass
     
     def stop(self) -> None:
         """Stop the engine."""
@@ -702,20 +728,42 @@ class FastEntryEngine:
             return False
         
         try:
+            # Execute market order
             self.polymarket.execute_order(
                 price=trade.leg1_price,
                 size=additional_size_usdc,
                 side="BUY",
                 token_id=trade.token_id,
             )
-            
+
+            # Update trade state via PositionManager to keep totals/idempotency consistent.
+            # Generate a unique action_id for idempotency tracking.
+            action_id = f"add_{trade_id}_{int(time.time() * 1000)}"
+            try:
+                result = self.position_manager.process_confirmation(
+                    trade_id=trade_id,
+                    action=TradeAction.ADD,
+                    action_id=action_id,
+                    additional_size=additional_size_usdc,
+                )
+            except Exception as e:
+                logger.exception(f"PositionManager.process_confirmation failed for ADD on {trade_id}: {e}")
+                result = {"ok": False, "message": str(e)}
+
+            if not result.get("ok"):
+                logger.warning(f"ADD processed but position update failed for {trade_id}: {result.get('message')}")
+
+            # Refresh trade object (may have been mutated)
+            trade = self.position_manager.get_trade(trade_id)
+
             self._log_ms("ADD_SIZE", {
                 "trade_id": trade_id,
-                "entry_id": trade.leg1_entry_id,
+                "entry_id": trade.leg1_entry_id if trade else None,
                 "additional_size_usdc": additional_size_usdc,
-                "total_size": trade.total_size,
+                "total_size": trade.total_size if trade else None,
+                "status": trade.status.value if trade else None,
             })
-            
+
             return True
         except Exception as e:
             logger.error(f"Add size failed: {e}")
