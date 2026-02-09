@@ -81,7 +81,7 @@ jobs:
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: chore(ci): automated fixes / checks
+          commit-message: "chore(ci): automated fixes / checks"
           branch: automation/bot-auto-pr
           title: "chore(ci): automated bot PR"
           body: |
