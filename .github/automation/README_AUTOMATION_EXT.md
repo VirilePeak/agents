@@ -30,3 +30,11 @@ Kurz: Diese Anleitung erklärt, wie du die optionalen Deploy‑Secrets sicher an
 
 Optional: Ich kann ein kurzes Shell‑Testscript hinzufügen, das vor dem ersten Merge die SSH‑Verbindung prüft (ssh -i KEY -p PORT USER@HOST echo ok). Soll ich das zusätzlich anlegen? (ja/nein)
 
+Hinweis zum Testscript:
+- Datei: `scripts/test_deploy_ssh.sh` (bereits vorhanden im Repo)
+- Beispielaufruf:
+  - `./scripts/test_deploy_ssh.sh -h example.com -u deployuser -k ~/.ssh/agents_deploy_key -p 22 -t /var/www/agents`
+- Das Script prüft SSH‑Login und optionales SCP eines kleinen Testfiles in das angegebene Zielverzeichnis.
+
+Führe das Script lokal aus, bevor du Secrets in GitHub setzt, um sicherzustellen, dass der Deploy‑User korrekt konfiguriert ist.
+
