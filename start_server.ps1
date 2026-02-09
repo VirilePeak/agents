@@ -71,8 +71,19 @@ Write-Host ""
 # Ensure UTF-8 for Python and console to avoid encoding errors with emojis
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+# (removed accidental marker)
 # Ensure project root is on PYTHONPATH for "src.*" imports
-$env:PYTHONPATH = $scriptPath
+# Append the project path to PYTHONPATH instead of replacing it so existing
+# user-defined paths remain available.
+if ([string]::IsNullOrEmpty($env:PYTHONPATH)) {
+    $env:PYTHONPATH = $scriptPath
+} else {
+    # Split on Windows path separator and avoid duplicating the entry
+    $parts = $env:PYTHONPATH -split ';'
+    if ($parts -notcontains $scriptPath) {
+        $env:PYTHONPATH = "$scriptPath;$env:PYTHONPATH"
+    }
+}
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 python -m uvicorn webhook_server_fastapi:app --host 0.0.0.0 --port 5000 --app-dir "$scriptPath"
