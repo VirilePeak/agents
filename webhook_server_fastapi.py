@@ -4365,7 +4365,7 @@ def webhook(payload: WebhookPayload):
                             cleared = _confirmation_store.clear(confirmed_conf_key)
                             logger.info(f"[{request_id}] confirmation_cleared_after_mq_reject: key={confirmed_conf_key} cleared={cleared}")
                     except Exception:
-                        logger.exception(f\"[{request_id}] error clearing confirmation key {confirmed_conf_key}\")
+                        logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                     return {
                         "ok": True,
                         "ignored": True,
