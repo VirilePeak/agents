@@ -3473,6 +3473,17 @@ def _check_signal_id_duplicate(signal_id: str, signal: str, request_id: str) -> 
                 f"[{request_id}] DUPLICATE SIGNAL: signal_id={signal_id}, signal={signal_upper}, cache_key={cache_key} "
                 f"(age={cache_age:.1f}s, TTL={_signal_id_cache_ttl_seconds}s) - SKIPPED"
             )
+            # If confirmation flow is enabled, allow duplicate to proceed if it's awaiting confirmation
+            try:
+                if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
+                    conf_key = f"{signal_id}|{signal_upper}"
+                    if hasattr(_confirmation_store, "_data") and conf_key in _confirmation_store._data:
+                        logger.info(f"[{request_id}] DUPLICATE SIGNAL but confirmation pending: allowing for confirmation (key={conf_key})")
+                        # refresh cache timestamp and allow processing so confirmation handling can run
+                        _signal_id_cache[cache_key] = current_time
+                        return False, "duplicate_allowed_for_confirmation"
+            except Exception:
+                pass
             return True, "duplicate"
         else:
             # Expired entry, remove it
