@@ -3469,24 +3469,20 @@ def _check_signal_id_duplicate(signal_id: str, signal: str, request_id: str) -> 
         if cache_age < _signal_id_cache_ttl_seconds:
             # Duplicate found within TTL
             _duplicate_signals_count += 1
+            # If confirmation flow is enabled, allow duplicate to proceed so confirmation logic can run
+            if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
+                # Refresh cache timestamp and allow processing so confirmation handling can run
+                _signal_id_cache[cache_key] = current_time
+                logger.info(
+                    f"[{request_id}] DUPLICATE_BUT_ALLOWED_FOR_CONFIRMATION: signal_id={signal_id}, signal={signal_upper}, cache_key={cache_key} "
+                    f"(age={cache_age:.1f}s, TTL={_signal_id_cache_ttl_seconds}s)"
+                )
+                return False, "duplicate_allowed_for_confirmation"
+            # Default duplicate behavior: skip processing
             logger.info(
-                f"[{request_id}] DUPLICATE SIGNAL: signal_id={signal_id}, signal={signal_upper}, cache_key={cache_key} "
+                f"[{request_id}] DUPLICATE_SIGNAL_SKIPPED: signal_id={signal_id}, signal={signal_upper}, cache_key={cache_key} "
                 f"(age={cache_age:.1f}s, TTL={_signal_id_cache_ttl_seconds}s) - SKIPPED"
             )
-            # If confirmation flow is enabled, allow duplicate to proceed if it's awaiting confirmation
-            try:
-                if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
-                    conf_key = f"{signal_id}|{signal_upper}"
-                    if hasattr(_confirmation_store, "_data"):
-                        keys_preview = list(_confirmation_store._data.keys())[:20]
-                        logger.debug(f"[{request_id}] confirmation_store keys_preview={keys_preview}")
-                        if conf_key in _confirmation_store._data:
-                            logger.info(f"[{request_id}] DUPLICATE SIGNAL but confirmation pending: allowing for confirmation (key={conf_key})")
-                        # refresh cache timestamp and allow processing so confirmation handling can run
-                        _signal_id_cache[cache_key] = current_time
-                        return False, "duplicate_allowed_for_confirmation"
-            except Exception:
-                pass
             return True, "duplicate"
         else:
             # Expired entry, remove it
@@ -3554,9 +3550,20 @@ def webhook(payload: WebhookPayload):
                                 except Exception:
                                     market = None
                                 up_token, down_token = resolve_up_down_tokens(market) if market else (None, None)
-                                token_or_market = up_token or slug or "unknown_market"
+                                # Build structured confirmation key:
+                                # Prefer market id, else token id, include direction and signal_id to avoid collisions.
                                 sig_id = payload.signal_id or signal_id_for_logging or "no-signal-id"
-                                conf_key = f"{token_or_market}:{sig_for_dedupe}:{sig_id}"
+                                market_id = None
+                                if market and isinstance(market, dict):
+                                    market_id = market.get("id")
+                                token_id = up_token or down_token or None
+                                if market_id:
+                                    conf_key = f\"pm:market:{market_id}:{sig_for_dedupe}:{sig_id}\"
+                                elif token_id:
+                                    conf_key = f\"pm:token:{token_id}:{sig_for_dedupe}:{sig_id}\"
+                                else:
+                                    # Fallback to slug-based key (least preferred)
+                                    conf_key = f\"pm:slug:{slug}:{sig_for_dedupe}:{sig_id}\"
 
                                 # Use new high-level handle API (returns pending/expired/confirmed)
                                 result = _confirmation_store.handle(

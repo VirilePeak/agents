@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import logging
 from threading import Lock
 from typing import Any, Dict, Optional, Tuple
 
@@ -128,7 +129,10 @@ class ConfirmationStore:
 
     def clear(self, key: str) -> bool:
         """Remove a pending confirmation key if present. Returns True if removed."""
+        logger = logging.getLogger("webhook_server_fastapi")
         with self.lock:
+            exists_before = key in self._data
+            logger.info(f"confirmation_clear_attempt: key={key} exists_before={exists_before}")
             if key in self._data:
                 try:
                     del self._data[key]
@@ -136,9 +140,12 @@ class ConfirmationStore:
                         self._save()
                     except Exception:
                         pass
+                    logger.info(f"confirmation_cleared: key={key} removed=True")
                     return True
                 except Exception:
+                    logger.exception(f"confirmation_cleared: key={key} removed=False (exception)")
                     return False
+        logger.info(f"confirmation_cleared: key={key} removed=False")
         return False
 
 
@@ -191,5 +198,22 @@ def compute_time_to_market_end(market: Optional[Dict[str, Any]]) -> Tuple[Option
         seconds = int((end - now).total_seconds())
         return seconds, "ok"
     except Exception:
+        # Log end_time_unavailable once per market to avoid spam
+        logger = logging.getLogger("webhook_server_fastapi")
+        try:
+            market_id = None
+            attempted_fields = []
+            if isinstance(market, dict):
+                market_id = market.get("id") or market.get("market_id") or market.get("slug")
+                attempted_fields = [k for k in ("end_time", "close_time", "end") if k in market]
+            key = f"end_unavailable:{market_id or 'unknown'}"
+            # use module-level cache
+            if not hasattr(compute_time_to_market_end, "_logged_keys"):
+                compute_time_to_market_end._logged_keys = set()
+            if key not in compute_time_to_market_end._logged_keys:
+                logger.info(f"end_time_unavailable: market_id/token={market_id} attempted_fields={attempted_fields}")
+                compute_time_to_market_end._logged_keys.add(key)
+        except Exception:
+            logger.exception("error logging end_time_unavailable")
         return None, "end_time_unavailable"
 
