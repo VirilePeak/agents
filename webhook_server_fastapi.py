@@ -3537,6 +3537,43 @@ def webhook(payload: WebhookPayload):
                     }
                 else:
                     logger.info(f"[{request_id}] SIGNAL DEDUPE: signal_id={signal_id}, signal={sig_for_dedupe} - ACCEPTED")
+                    # ─────────────────────────────────────────────
+                    # CONFIRMATION (Debounce) - run IMMEDIATELY AFTER dedupe acceptance,
+                    # and BEFORE Session / MQ checks (ensures ordering: SIGNAL ACCEPTED -> confirmation -> Session Gate)
+                    # ─────────────────────────────────────────────
+                    try:
+                        if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
+                            # Build confirmation key: prefer explicit signal_id; fallback to hashed logging id + signal
+                            if payload.signal_id:
+                                conf_key = f"{payload.signal_id}|{sig_for_dedupe}"
+                            else:
+                                # signal_id_for_logging may be None here; use fallback hash if needed
+                                payload_hash = _hash_payload(payload.model_dump())
+                                fallback_id = f"hash_{payload_hash}"
+                                conf_key = f"{fallback_id}|{sig_for_dedupe}"
+
+                            confirmed, _ = _confirmation_store.pop_if_confirmed(
+                                conf_key,
+                                delay=getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60),
+                                ttl=getattr(settings, "CONFIRMATION_TTL_SECONDS", 180),
+                            )
+                            if not confirmed:
+                                # mark pending (idempotent)
+                                _confirmation_store.mark_pending(conf_key, {"first_seen": time.time(), "request_id": request_id})
+                                logger.info(f"[{request_id}] confirmation_pending: key={conf_key}")
+                                return {
+                                    "ok": True,
+                                    "status": "pending_confirmation",
+                                    "reason": "confirmation_pending",
+                                    "message": "Signal stored, waiting for confirmation",
+                                    "confirmation_key": conf_key,
+                                    "mode": get_trading_mode_str(),
+                                }
+                            else:
+                                logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+                    except Exception:
+                        # Fail-safe: if confirmation store has issues, continue processing (do not block pipeline)
+                        logger.exception(f"[{request_id}] confirmation_store error, continuing without confirmation")
             else:
                 logger.warning(f"[{request_id}] SIGNAL DEDUPE: signal_id={signal_id} but invalid signal={sig_for_dedupe}, skipping dedupe check")
         else:
@@ -3573,36 +3610,7 @@ def webhook(payload: WebhookPayload):
             f"MODE: {mode} | KIND: {signal_kind} (TradingView signal tracking)"
         )
 
-        # ─────────────────────────────────────────────
-        # CONFIRMATION (Debounce) - run BEFORE Session / MQ checks
-        # ─────────────────────────────────────────────
-        if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
-            # Build confirmation key: prefer explicit signal_id; fallback to hashed logging id + signal
-            conf_key = None
-            if payload.signal_id:
-                conf_key = f"{payload.signal_id}|{sig_for_dedupe}"
-            else:
-                conf_key = f"{signal_id_for_logging}|{sig_for_dedupe}"
-
-            confirmed, _ = _confirmation_store.pop_if_confirmed(
-                conf_key,
-                delay=getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60),
-                ttl=getattr(settings, "CONFIRMATION_TTL_SECONDS", 180),
-            )
-            if not confirmed:
-                # mark pending (idempotent)
-                _confirmation_store.mark_pending(conf_key, {"first_seen": time.time(), "request_id": request_id})
-                logger.info(f"[{request_id}] confirmation_pending: key={conf_key}")
-                return {
-                    "ok": True,
-                    "status": "pending_confirmation",
-                    "reason": "confirmation_pending",
-                    "message": "Signal stored, waiting for confirmation",
-                    "confirmation_key": conf_key,
-                    "mode": get_trading_mode_str(),
-                }
-            else:
-                logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+        # (confirmation logic moved to run immediately after dedupe acceptance to ensure correct ordering)
 
         # Robustes Parsing und Normalisierung
         # Note: sig_for_dedupe was already parsed above for dedupe check
