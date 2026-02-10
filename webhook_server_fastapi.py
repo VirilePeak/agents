@@ -221,6 +221,24 @@ async def startup_event():
     asyncio.create_task(cleanup_task())
     logger.info("Background cleanup task started")
     
+    # Start confirmation store expiry task (cleans up orphaned pending keys)
+    async def confirmation_expiry_task():
+        """Periodically expire old confirmation keys to prevent store bloat."""
+        ttl = getattr(settings, "CONFIRMATION_TTL_SECONDS", 180)
+        poll_interval = max(60.0, ttl / 2)  # Check at half-TTL interval, minimum 60s
+        while True:
+            try:
+                await asyncio.sleep(poll_interval)
+                expired = _confirmation_store.expire_all_older_than(ttl)
+                if expired > 0:
+                    logger.info(f"confirmation_expiry_task: expired {expired} orphaned keys (ttl={ttl}s)")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"confirmation_expiry_task error: {e}")
+    asyncio.create_task(confirmation_expiry_task())
+    logger.info("Confirmation expiry task started")
+    
     # Rehydrate active paper trades from paper_trades.jsonl
     if is_paper_trading():
         rehydrated_count = rehydrate_paper_trades()
@@ -3540,30 +3558,13 @@ def webhook(payload: WebhookPayload):
                     # ─────────────────────────────────────────────
                     try:
                         if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
-                            # Build a stable confirmation key using market/token + direction + signal_id
+                            # Build a stable confirmation key that does NOT depend on current slot/market
+                            # (avoids slot-drift: Alert1 at 14:59 slot A, Alert2 at 15:01 slot B → key mismatch)
+                            # Key = "pm:confirm:<direction>:<signal_id>" — signal_id is stable across both alerts
                             try:
-                                now_ts = int(time.time())
-                                slot = current_slot_start(now_ts)
-                                slug = slug_for_slot(slot)
-                                try:
-                                    market = fetch_market_by_slug(slug)
-                                except Exception:
-                                    market = None
-                                up_token, down_token = resolve_up_down_tokens(market) if market else (None, None)
-                                # Build structured confirmation key:
-                                # Prefer market id, else token id, include direction and signal_id to avoid collisions.
-                                sig_id = payload.signal_id or signal_id_for_logging or "no-signal-id"
-                                market_id = None
-                                if market and isinstance(market, dict):
-                                    market_id = market.get("id")
-                                token_id = up_token or down_token or None
-                                if market_id:
-                                    conf_key = f\"pm:market:{market_id}:{sig_for_dedupe}:{sig_id}\"
-                                elif token_id:
-                                    conf_key = f\"pm:token:{token_id}:{sig_for_dedupe}:{sig_id}\"
-                                else:
-                                    # Fallback to slug-based key (least preferred)
-                                    conf_key = f\"pm:slug:{slug}:{sig_for_dedupe}:{sig_id}\"
+                                sig_id = payload.signal_id or "no-signal-id"
+                                conf_key = f"pm:confirm:{sig_for_dedupe}:{sig_id}"
+
 
                                 # Use new high-level handle API (returns pending/expired/confirmed)
                                 result = _confirmation_store.handle(

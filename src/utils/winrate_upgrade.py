@@ -132,21 +132,22 @@ class ConfirmationStore:
         logger = logging.getLogger("webhook_server_fastapi")
         with self.lock:
             exists_before = key in self._data
-            logger.info(f"confirmation_clear_attempt: key={key} exists_before={exists_before}")
-            if key in self._data:
+            if not exists_before:
+                # Key already removed (e.g. by handle() on confirmed) — this is normal, log at DEBUG
+                logger.debug(f"confirmation_clear_noop: key={key} (already removed by handle)")
+                return False
+            logger.info(f"confirmation_clear_attempt: key={key} exists_before=True")
+            try:
+                del self._data[key]
                 try:
-                    del self._data[key]
-                    try:
-                        self._save()
-                    except Exception:
-                        pass
-                    logger.info(f"confirmation_cleared: key={key} removed=True")
-                    return True
+                    self._save()
                 except Exception:
-                    logger.exception(f"confirmation_cleared: key={key} removed=False (exception)")
-                    return False
-        logger.info(f"confirmation_cleared: key={key} removed=False")
-        return False
+                    pass
+                logger.info(f"confirmation_cleared: key={key} removed=True")
+                return True
+            except Exception:
+                logger.exception(f"confirmation_cleared: key={key} removed=False (exception)")
+                return False
 
 
 def check_market_quality_for_entry(best_bid: Optional[float], best_ask: Optional[float], ask_size: Optional[float], settings) -> Tuple[bool, str, Dict[str, Any]]:
