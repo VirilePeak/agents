@@ -93,6 +93,8 @@ $env:WINRATE_UPGRADE_ENABLED = "true"
 $env:REQUIRE_CONFIRMATION = "true"
 $env:CONFIRMATION_DELAY_SECONDS = "60"
 $env:CONFIRMATION_TTL_SECONDS = "180"
+# Backwards-compatible env var for existing code
+$env:CONFIRM_TTL_SECONDS = "180"
 $env:MAX_SPREAD_ENTRY = "0.10"
 $env:MIN_ASK_SIZE = "5"
 $env:ENFORCE_DEPTH = "true"
