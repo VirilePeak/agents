@@ -62,6 +62,54 @@ class ConfirmationStore:
                 return True, payload
             return False, None
 
+    def handle(self, key: str, delay: int, ttl: int, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        High-level helper that implements the desired handle() API:
+        - If no entry exists: mark pending and return {"status":"pending"}
+        - If entry exists but expired: remove and return {"status":"expired"}
+        - If entry exists and delay has passed: remove and return {"status":"confirmed", "payload": ...}
+        - If entry exists and still within delay: return {"status":"pending", "seconds_seen": ...}
+        """
+        now = time.time()
+        with self.lock:
+            entry = self._data.get(key)
+            if not entry:
+                # create pending entry
+                self._data[key] = {"first_seen": now, "payload": payload or {}}
+                try:
+                    self._save()
+                except Exception:
+                    pass
+                return {"status": "pending", "first_seen": now}
+
+            first = entry.get("first_seen", now)
+            age = now - first
+            if age > ttl:
+                # expired
+                try:
+                    del self._data[key]
+                except KeyError:
+                    pass
+                try:
+                    self._save()
+                except Exception:
+                    pass
+                return {"status": "expired", "age": age}
+
+            if age >= delay:
+                payload_out = entry.get("payload")
+                try:
+                    del self._data[key]
+                except KeyError:
+                    pass
+                try:
+                    self._save()
+                except Exception:
+                    pass
+                return {"status": "confirmed", "payload": payload_out, "age": age}
+
+            return {"status": "pending", "age": age}
+
     def expire_all_older_than(self, ttl: int) -> int:
         removed = 0
         now = time.time()
