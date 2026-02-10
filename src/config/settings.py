@@ -164,6 +164,19 @@ def _load_from_env(settings: Settings) -> None:
     set_if("PREFIX", str)
     set_if("PAPER_LOG_PATH", str)
     set_if("GAMMA_API", str)
+    # Win-rate upgrade envs
+    set_if("WINRATE_UPGRADE_ENABLED", lambda v: parse_bool(v, settings.WINRATE_UPGRADE_ENABLED))
+    set_if("REQUIRE_CONFIRMATION", lambda v: parse_bool(v, settings.REQUIRE_CONFIRMATION))
+    set_if("CONFIRMATION_DELAY_SECONDS", lambda v: parse_int(v, settings.CONFIRMATION_DELAY_SECONDS))
+    set_if("CONFIRMATION_TTL_SECONDS", lambda v: parse_int(v, settings.CONFIRMATION_TTL_SECONDS))
+    set_if("MAX_SPREAD_ENTRY", lambda v: parse_float(v, settings.MAX_SPREAD_ENTRY))
+    set_if("MIN_ASK_SIZE", lambda v: parse_float(v, settings.MIN_ASK_SIZE))
+    set_if("ENFORCE_DEPTH", lambda v: parse_bool(v, settings.ENFORCE_DEPTH))
+    set_if("ENTRY_WINDOW_END_SECONDS", lambda v: parse_int(v, settings.ENTRY_WINDOW_END_SECONDS))
+    set_if("ENTRY_WINDOW_STRICT", lambda v: parse_bool(v, settings.ENTRY_WINDOW_STRICT))
+    set_if("MAX_SPREAD_EXIT", lambda v: parse_float(v, settings.MAX_SPREAD_EXIT))
+    set_if("MAX_HOLD_SECONDS", lambda v: parse_int(v, settings.MAX_HOLD_SECONDS))
+    set_if("PENDING_CONFIRM_PATH", str)
 
 
 def get_settings() -> Settings:

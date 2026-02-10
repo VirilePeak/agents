@@ -3566,9 +3566,9 @@ def webhook(payload: WebhookPayload):
             # Build confirmation key: prefer explicit signal_id; fallback to hashed logging id + signal
             conf_key = None
             if payload.signal_id:
-                conf_key = f"{payload.signal_id}|{sig}"
+                conf_key = f"{payload.signal_id}|{sig_for_dedupe}"
             else:
-                conf_key = f"{signal_id_for_logging}|{sig}"
+                conf_key = f"{signal_id_for_logging}|{sig_for_dedupe}"
 
             confirmed, _ = _confirmation_store.pop_if_confirmed(
                 conf_key,
