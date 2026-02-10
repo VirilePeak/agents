@@ -3664,6 +3664,12 @@ def webhook(payload: WebhookPayload):
             if settings.REQUIRE_RAWCONF:
                 _blocked_conf_missing += 1
                 logger.info(f"[{request_id}] BLOCKED: rawConf missing (REQUIRE_RAWCONF=True)")
+                try:
+                    if confirmed_conf_key:
+                        cleared = _confirmation_store.clear(confirmed_conf_key)
+                        logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                except Exception:
+                    logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                 return {
                     "status": "blocked",
                     "reason": "rawConf_missing",
@@ -3676,6 +3682,12 @@ def webhook(payload: WebhookPayload):
             else:
                 _blocked_conf_missing += 1
                 logger.info(f"[{request_id}] BLOCKED: rawConf missing (MISSING_RAWCONF_ACTION=block)")
+                try:
+                    if confirmed_conf_key:
+                        cleared = _confirmation_store.clear(confirmed_conf_key)
+                        logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                except Exception:
+                    logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                 return {
                     "status": "blocked",
                     "reason": "rawConf_missing",
@@ -3688,6 +3700,12 @@ def webhook(payload: WebhookPayload):
             global _blocked_conf_low
             _blocked_conf_low += 1
             logger.info(f"[{request_id}] BLOCKED: rawConf={raw_conf} < MIN_CONFIDENCE={settings.MIN_CONFIDENCE}")
+            try:
+                if confirmed_conf_key:
+                    cleared = _confirmation_store.clear(confirmed_conf_key)
+                    logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+            except Exception:
+                logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
             return {
                 "status": "blocked",
                 "reason": "rawConf_low",
@@ -3702,6 +3720,12 @@ def webhook(payload: WebhookPayload):
             global _blocked_conf_high
             _blocked_conf_high += 1
             logger.info(f"[{request_id}] BLOCKED: rawConf={raw_conf} > MAX_CONFIDENCE={settings.MAX_CONFIDENCE}")
+            try:
+                if confirmed_conf_key:
+                    cleared = _confirmation_store.clear(confirmed_conf_key)
+                    logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+            except Exception:
+                logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
             return {
                 "status": "blocked",
                 "reason": "rawConf_high",
@@ -3764,6 +3788,12 @@ def webhook(payload: WebhookPayload):
         # PHASE 2: Dislocation is logged but NOT gated (REQUIRE_DISLOCATION=False)
         if settings.REQUIRE_DISLOCATION and not dislocation:
             logger.info(f"[{request_id}] BLOCKED: Dislocation required but not present")
+            try:
+                if confirmed_conf_key:
+                    cleared = _confirmation_store.clear(confirmed_conf_key)
+                    logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+            except Exception:
+                logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
             return {
                 "status": "blocked",
                 "reason": "dislocation_required",
@@ -3820,6 +3850,12 @@ def webhook(payload: WebhookPayload):
                     f"(file: {open_trades_file_count}, RAM: {open_trades_ram_count}). "
                     f"New opens blocked until cleanup completes."
                 )
+                try:
+                    if confirmed_conf_key:
+                        cleared = _confirmation_store.clear(confirmed_conf_key)
+                        logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                except Exception:
+                    logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                 return {
                     "status": "blocked",
                     "reason": "health_degraded_orphans",
@@ -4191,6 +4227,12 @@ def webhook(payload: WebhookPayload):
                         market_quality_result=market_quality_result,
                         pattern_gate_result=pattern_gate_result,
                     )
+                    try:
+                        if confirmed_conf_key:
+                            cleared = _confirmation_store.clear(confirmed_conf_key)
+                            logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                    except Exception:
+                        logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                     return {
                         "ok": True,
                         "ignored": True,
@@ -4209,6 +4251,12 @@ def webhook(payload: WebhookPayload):
                         f"Trade will NOT be opened. token_id={chosen_token[:16]}... "
                         f"(price_source={entry_price_data.get('price_source')}, retry_used={entry_price_data.get('retry_used')})"
                     )
+                    try:
+                        if confirmed_conf_key:
+                            cleared = _confirmation_store.clear(confirmed_conf_key)
+                            logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                    except Exception:
+                        logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                     return {
                         "ok": True,
                         "ignored": True,
@@ -4229,6 +4277,12 @@ def webhook(payload: WebhookPayload):
                             f"(must be 0 < price < 1). Trade will NOT be opened. "
                             f"(price_source={entry_price_data.get('price_source')}, retry_used={entry_price_data.get('retry_used')})"
                         )
+                        try:
+                            if confirmed_conf_key:
+                                cleared = _confirmation_store.clear(confirmed_conf_key)
+                                logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                        except Exception:
+                            logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                         return {
                             "ok": True,
                             "ignored": True,
@@ -4246,6 +4300,12 @@ def webhook(payload: WebhookPayload):
                         f"Trade will NOT be opened. "
                         f"(price_source={entry_price_data.get('price_source')}, retry_used={entry_price_data.get('retry_used')})"
                     )
+                    try:
+                        if confirmed_conf_key:
+                            cleared = _confirmation_store.clear(confirmed_conf_key)
+                            logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                    except Exception:
+                        logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                     return {
                         "ok": True,
                         "ignored": True,
@@ -4349,6 +4409,13 @@ def webhook(payload: WebhookPayload):
                             f"entry_price={paper_trade.entry_price:.6f} "
                             f"(verified: matches fetched price)"
                         )
+                        # Clear confirmed confirmation key after successful trade creation
+                        try:
+                            if confirmed_conf_key:
+                                cleared = _confirmation_store.clear(confirmed_conf_key)
+                                logger.info(f"[{request_id}] confirmation_cleared_after_trade_create: key={confirmed_conf_key} cleared={cleared}")
+                        except Exception:
+                            logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                     else:
                         logger.warning(f"[{request_id}] Failed to register paper trade in Position Manager (market may be locked)")
                 except Exception as e:
@@ -4391,6 +4458,12 @@ def webhook(payload: WebhookPayload):
                     f"[{request_id}] CRITICAL: entry_price is None when writing to paper_trades.jsonl. "
                     f"Trade will NOT be logged to prevent data corruption."
                 )
+                try:
+                    if confirmed_conf_key:
+                        cleared = _confirmation_store.clear(confirmed_conf_key)
+                        logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                except Exception:
+                    logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                 return {
                     "ok": True,
                     "ignored": True,
