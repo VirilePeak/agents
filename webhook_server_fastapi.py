@@ -24,11 +24,17 @@ from src.utils.helpers import (
     parse_bool, parse_int, parse_float, normalize_signal,
     utc_now_iso, calc_session
 )
+from src.utils.winrate_upgrade import ConfirmationStore, check_market_quality_for_entry, compute_time_to_market_end
 
 # Initialize settings and logging
 settings = get_settings()
 setup_logging(settings)
 logger = get_logger(__name__)
+
+# Confirmation store (persistent small JSON)
+_confirmation_store = ConfirmationStore(getattr(settings, "PENDING_CONFIRM_PATH", "pending_confirmations.json"))
+# Market-quality reject counters
+_mq_reject_counters = defaultdict(int)
 
 app = FastAPI(
     title="TradingView → Polymarket Bot",
@@ -1330,9 +1336,24 @@ def _get_entry_price_for_trade(token_id: str) -> Optional[Dict[str, Any]]:
         
         if orderbook.bids and len(orderbook.bids) > 0:
             best_bid = float(orderbook.bids[0].price)
+            # attempt to extract size if available
+            best_bid_size = None
+            try:
+                best_bid_size = float(getattr(orderbook.bids[0], "size", None) or getattr(orderbook.bids[0], "quantity", None) or (orderbook.bids[0].get("size") if isinstance(orderbook.bids[0], dict) else None))
+            except Exception:
+                best_bid_size = None
+        else:
+            best_bid_size = None
         
         if orderbook.asks and len(orderbook.asks) > 0:
             best_ask = float(orderbook.asks[0].price)
+            best_ask_size = None
+            try:
+                best_ask_size = float(getattr(orderbook.asks[0], "size", None) or getattr(orderbook.asks[0], "quantity", None) or (orderbook.asks[0].get("size") if isinstance(orderbook.asks[0], dict) else None))
+            except Exception:
+                best_ask_size = None
+        else:
+            best_ask_size = None
         
         # Check if orderbook is empty (no bid and no ask)
         retry_used = False
@@ -1408,9 +1429,10 @@ def _get_entry_price_for_trade(token_id: str) -> Optional[Dict[str, Any]]:
         logger.info(
             f"ENTRY PRICE FETCH SUCCESS: token_id={token_id[:16]}..., "
             f"entry_price={entry_price:.6f}, method={entry_method} (REALISTIC: best_ask for BUY), "
-            f"best_bid={best_bid}, best_ask={best_ask}, "
+            f"best_bid={best_bid}, best_ask={best_ask}, best_bid_size={best_bid_size}, best_ask_size={best_ask_size}, "
             f"price_source=orderbook, retry_used={retry_used}, total_time_ms={total_fetch_time_ms:.2f}"
         )
+        
         
         return {
             "entry_price": entry_price,
@@ -1418,6 +1440,8 @@ def _get_entry_price_for_trade(token_id: str) -> Optional[Dict[str, Any]]:
             "entry_ob_timestamp": entry_ob_timestamp,
             "best_bid": best_bid,
             "best_ask": best_ask,
+            "best_bid_size": best_bid_size,
+            "best_ask_size": best_ask_size,
             "price_source": "orderbook",
             "retry_used": retry_used,
         }
@@ -1487,6 +1511,44 @@ def _get_exit_price_for_trade(trade) -> Optional[Dict[str, Any]]:
                     f"(best_ask={best_ask})"
                 )
                 return None
+            
+            # Exit spread safety: delay exit if spread too wide unless hold time exceeded
+            spread = None
+            try:
+                if best_ask is not None:
+                    spread = best_ask - best_bid
+            except Exception:
+                spread = None
+
+            max_spread_exit = getattr(settings, "MAX_SPREAD_EXIT", 0.15)
+            max_hold = getattr(settings, "MAX_HOLD_SECONDS", 900)
+            allow_force_exit = False
+            # compute age since entry if available
+            age_seconds = None
+            try:
+                created = getattr(trade, "created_at_utc", None) or getattr(trade, "created_at", None)
+                if created:
+                    from datetime import datetime, timezone
+                    if isinstance(created, str):
+                        created_dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                    else:
+                        created_dt = datetime.fromtimestamp(float(created), tz=timezone.utc)
+                    age_seconds = (datetime.now(timezone.utc) - created_dt).total_seconds()
+            except Exception:
+                age_seconds = None
+
+            if spread is not None and spread > max_spread_exit:
+                if age_seconds is not None and age_seconds >= max_hold:
+                    # force exit despite wide spread
+                    logger.warning(
+                        f"EXIT: max_hold exceeded for trade {trade.trade_id} (age={age_seconds}s). Forcing exit despite spread={spread:.4f} > max_spread_exit={max_spread_exit}"
+                    )
+                else:
+                    # delay exit
+                    logger.info(
+                        f"EXIT DELAYED: exit_spread_too_wide for trade {trade.trade_id} (spread={spread:.4f} > {max_spread_exit})"
+                    )
+                    return None
             
             exit_price = best_bid
             exit_method = "best_bid"
@@ -3497,6 +3559,37 @@ def webhook(payload: WebhookPayload):
             f"MODE: {mode} | KIND: {signal_kind} (TradingView signal tracking)"
         )
 
+        # ─────────────────────────────────────────────
+        # CONFIRMATION (Debounce) - run BEFORE Session / MQ checks
+        # ─────────────────────────────────────────────
+        if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
+            # Build confirmation key: prefer explicit signal_id; fallback to hashed logging id + signal
+            conf_key = None
+            if payload.signal_id:
+                conf_key = f"{payload.signal_id}|{sig}"
+            else:
+                conf_key = f"{signal_id_for_logging}|{sig}"
+
+            confirmed, _ = _confirmation_store.pop_if_confirmed(
+                conf_key,
+                delay=getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60),
+                ttl=getattr(settings, "CONFIRMATION_TTL_SECONDS", 180),
+            )
+            if not confirmed:
+                # mark pending (idempotent)
+                _confirmation_store.mark_pending(conf_key, {"first_seen": time.time(), "request_id": request_id})
+                logger.info(f"[{request_id}] confirmation_pending: key={conf_key}")
+                return {
+                    "ok": True,
+                    "status": "pending_confirmation",
+                    "reason": "confirmation_pending",
+                    "message": "Signal stored, waiting for confirmation",
+                    "confirmation_key": conf_key,
+                    "mode": get_trading_mode_str(),
+                }
+            else:
+                logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+
         # Robustes Parsing und Normalisierung
         # Note: sig_for_dedupe was already parsed above for dedupe check
         sig = sig_for_dedupe  # Reuse already normalized signal
@@ -4126,6 +4219,45 @@ def webhook(payload: WebhookPayload):
                     f"token_id={chosen_token[:16]}... "
                     f"(Trade will be created with this price - NO RACE CONDITION)"
                 )
+            
+            # WIN-RATE UPGRADE: Market Quality Gate + Confirmation flow
+            if getattr(settings, "WINRATE_UPGRADE_ENABLED", False):
+                best_bid = entry_price_data.get("best_bid")
+                best_ask = entry_price_data.get("best_ask")
+                best_ask_size = entry_price_data.get("best_ask_size")
+
+                # Compute time to market end if available
+                time_to_end, end_reason = compute_time_to_market_end(market)
+
+                # (confirmation already handled earlier before session/MQ)
+
+                # Market Quality Gate check
+                ok_mq, reason_mq, details_mq = check_market_quality_for_entry(
+                    best_bid, best_ask, best_ask_size, settings
+                )
+
+                # Entry window allowance
+                allow_by_window = False
+                if time_to_end is not None:
+                    if time_to_end <= getattr(settings, "ENTRY_WINDOW_END_SECONDS", 300):
+                        allow_by_window = True
+                else:
+                    logger.debug(f"[{request_id}] end_time_unavailable for market, falling back to MQ-only")
+
+                if not (allow_by_window or ok_mq):
+                    # reject
+                    _mq_reject_counters[reason_mq] += 1
+                    logger.info(
+                        f"[{request_id}] MQ_REJECT: reason={reason_mq} details={details_mq} time_to_end={time_to_end}"
+                    )
+                    return {
+                        "ok": True,
+                        "ignored": True,
+                        "reason": reason_mq,
+                        "details": details_mq,
+                        "time_to_end": time_to_end,
+                        "mode": get_trading_mode_str(),
+                    }
             
             # Register Paper Trade in Position Manager (for auto-close)
             # entry_price is guaranteed to be valid at this point (not None, valid float, 0 < price < 1)
