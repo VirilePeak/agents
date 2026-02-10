@@ -85,6 +85,33 @@ if ([string]::IsNullOrEmpty($env:PYTHONPATH)) {
     }
 }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+#
+# Win-Rate Upgrade runtime flags (set here for safe paper-mode activation)
+# These are intentionally set to safe values for Paper mode testing.
+# Toggle by editing these lines or setting environment variables elsewhere.
+$env:WINRATE_UPGRADE_ENABLED = "true"
+$env:REQUIRE_CONFIRMATION = "true"
+$env:CONFIRMATION_DELAY_SECONDS = "60"
+$env:CONFIRMATION_TTL_SECONDS = "180"
+$env:MAX_SPREAD_ENTRY = "0.10"
+$env:MIN_ASK_SIZE = "5"
+$env:ENFORCE_DEPTH = "true"
+$env:ENTRY_WINDOW_END_SECONDS = "300"
+$env:ENTRY_WINDOW_STRICT = "true"
+$env:MAX_SPREAD_EXIT = "0.15"
+$env:MAX_HOLD_SECONDS = "900"
+
+Write-Host "WINRATE_UPGRADE_ENABLED = $($env:WINRATE_UPGRADE_ENABLED)" -ForegroundColor Cyan
+Write-Host "REQUIRE_CONFIRMATION = $($env:REQUIRE_CONFIRMATION)" -ForegroundColor Cyan
+Write-Host "CONFIRMATION_DELAY_SECONDS = $($env:CONFIRMATION_DELAY_SECONDS)" -ForegroundColor Cyan
+Write-Host "CONFIRMATION_TTL_SECONDS = $($env:CONFIRMATION_TTL_SECONDS)" -ForegroundColor Cyan
+Write-Host "MAX_SPREAD_ENTRY = $($env:MAX_SPREAD_ENTRY)" -ForegroundColor Cyan
+Write-Host "MIN_ASK_SIZE = $($env:MIN_ASK_SIZE)" -ForegroundColor Cyan
+Write-Host "ENFORCE_DEPTH = $($env:ENFORCE_DEPTH)" -ForegroundColor Cyan
+Write-Host "ENTRY_WINDOW_END_SECONDS = $($env:ENTRY_WINDOW_END_SECONDS)" -ForegroundColor Cyan
+Write-Host "ENTRY_WINDOW_STRICT = $($env:ENTRY_WINDOW_STRICT)" -ForegroundColor Cyan
+Write-Host "MAX_SPREAD_EXIT = $($env:MAX_SPREAD_EXIT)" -ForegroundColor Cyan
+Write-Host "MAX_HOLD_SECONDS = $($env:MAX_HOLD_SECONDS)" -ForegroundColor Cyan
 
 python -m uvicorn webhook_server_fastapi:app --host 0.0.0.0 --port 5000 --app-dir "$scriptPath"
 
