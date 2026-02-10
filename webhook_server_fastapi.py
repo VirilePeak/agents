@@ -3543,34 +3543,51 @@ def webhook(payload: WebhookPayload):
                     # ─────────────────────────────────────────────
                     try:
                         if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
-                            # Build confirmation key: prefer explicit signal_id; fallback to hashed logging id + signal
-                            if payload.signal_id:
-                                conf_key = f"{payload.signal_id}|{sig_for_dedupe}"
-                            else:
-                                # signal_id_for_logging may be None here; use fallback hash if needed
-                                payload_hash = _hash_payload(payload.model_dump())
-                                fallback_id = f"hash_{payload_hash}"
-                                conf_key = f"{fallback_id}|{sig_for_dedupe}"
+                            # Build a stable confirmation key using market/token + direction + signal_id
+                            try:
+                                now_ts = int(time.time())
+                                slot = current_slot_start(now_ts)
+                                slug = slug_for_slot(slot)
+                                try:
+                                    market = fetch_market_by_slug(slug)
+                                except Exception:
+                                    market = None
+                                up_token, down_token = resolve_up_down_tokens(market) if market else (None, None)
+                                token_or_market = up_token or slug or "unknown_market"
+                                sig_id = payload.signal_id or signal_id_for_logging or "no-signal-id"
+                                conf_key = f"{token_or_market}:{sig_for_dedupe}:{sig_id}"
 
-                            confirmed, _ = _confirmation_store.pop_if_confirmed(
-                                conf_key,
-                                delay=getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60),
-                                ttl=getattr(settings, "CONFIRMATION_TTL_SECONDS", 180),
-                            )
-                            if not confirmed:
-                                # mark pending (idempotent)
-                                _confirmation_store.mark_pending(conf_key, {"first_seen": time.time(), "request_id": request_id})
-                                logger.info(f"[{request_id}] confirmation_pending: key={conf_key}")
-                                return {
-                                    "ok": True,
-                                    "status": "pending_confirmation",
-                                    "reason": "confirmation_pending",
-                                    "message": "Signal stored, waiting for confirmation",
-                                    "confirmation_key": conf_key,
-                                    "mode": get_trading_mode_str(),
-                                }
-                            else:
-                                logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+                                # Use new high-level handle API (returns pending/expired/confirmed)
+                                result = _confirmation_store.handle(
+                                    conf_key,
+                                    delay=getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60),
+                                    ttl=getattr(settings, "CONFIRMATION_TTL_SECONDS", 180),
+                                    payload={"first_seen": time.time(), "request_id": request_id},
+                                )
+                                status = result.get("status")
+                                if status == "pending":
+                                    logger.info(f"[{request_id}] confirmation_pending: key={conf_key} delay={getattr(settings, 'CONFIRMATION_DELAY_SECONDS', 60)}s ttl={getattr(settings, 'CONFIRMATION_TTL_SECONDS', 180)}s")
+                                    return {
+                                        "status": "pending_confirmation",
+                                        "signal_id": sig_id,
+                                        "signal": sig_for_dedupe,
+                                        "key": conf_key,
+                                        "delay_seconds": getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60),
+                                        "ttl_seconds": getattr(settings, "CONFIRMATION_TTL_SECONDS", 180),
+                                    }
+                                if status == "expired":
+                                    logger.info(f"[{request_id}] confirmation_expired: key={conf_key}")
+                                    return {
+                                        "status": "pending_confirmation",
+                                        "signal_id": sig_id,
+                                        "signal": sig_for_dedupe,
+                                        "key": conf_key,
+                                    }
+                                # confirmed -> continue pipeline
+                                if status == "confirmed":
+                                    logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+                            except Exception:
+                                logger.exception(f"[{request_id}] confirmation_store error, continuing without confirmation")
                     except Exception:
                         # Fail-safe: if confirmation store has issues, continue processing (do not block pipeline)
                         logger.exception(f"[{request_id}] confirmation_store error, continuing without confirmation")
