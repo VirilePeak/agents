@@ -31,3 +31,7 @@ local_db*
 # generated local markets db (too large for git)
 local_markets_db/all-current-markets_*.json
 
+
+# Cursor local files
+.cursor/
+
