@@ -3477,8 +3477,11 @@ def _check_signal_id_duplicate(signal_id: str, signal: str, request_id: str) -> 
             try:
                 if getattr(settings, "WINRATE_UPGRADE_ENABLED", False) and getattr(settings, "REQUIRE_CONFIRMATION", False):
                     conf_key = f"{signal_id}|{signal_upper}"
-                    if hasattr(_confirmation_store, "_data") and conf_key in _confirmation_store._data:
-                        logger.info(f"[{request_id}] DUPLICATE SIGNAL but confirmation pending: allowing for confirmation (key={conf_key})")
+                    if hasattr(_confirmation_store, "_data"):
+                        keys_preview = list(_confirmation_store._data.keys())[:20]
+                        logger.debug(f"[{request_id}] confirmation_store keys_preview={keys_preview}")
+                        if conf_key in _confirmation_store._data:
+                            logger.info(f"[{request_id}] DUPLICATE SIGNAL but confirmation pending: allowing for confirmation (key={conf_key})")
                         # refresh cache timestamp and allow processing so confirmation handling can run
                         _signal_id_cache[cache_key] = current_time
                         return False, "duplicate_allowed_for_confirmation"
