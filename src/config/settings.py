@@ -74,6 +74,28 @@ class Settings:
     PREFIX: str = "btc-updown-15m"
     PAPER_LOG_PATH: str = "paper_trades.jsonl"
     GAMMA_API: str = "https://gamma-api.polymarket.com"
+    
+    # Win-rate upgrade (feature flag)
+    WINRATE_UPGRADE_ENABLED: bool = False  # safe default: disabled
+
+    # Market Quality (entry) params
+    MAX_SPREAD_ENTRY: float = 0.10
+    MIN_ASK_SIZE: float = 5.0
+    ENFORCE_DEPTH: bool = True  # if True, require ask size available
+
+    # Entry window
+    ENTRY_WINDOW_END_SECONDS: int = 300  # 5 minutes
+    ENTRY_WINDOW_STRICT: bool = True
+
+    # Confirmation / debounce
+    REQUIRE_CONFIRMATION: bool = True
+    CONFIRMATION_DELAY_SECONDS: int = 60
+    CONFIRMATION_TTL_SECONDS: int = 180
+    PENDING_CONFIRM_PATH: str = "pending_confirmations.json"
+
+    # Exit safety
+    MAX_SPREAD_EXIT: float = 0.15
+    MAX_HOLD_SECONDS: int = 900  # 15 minutes
 
 
 _settings: Optional[Settings] = None
