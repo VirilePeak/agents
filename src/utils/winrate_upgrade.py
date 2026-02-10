@@ -126,6 +126,21 @@ class ConfirmationStore:
                     pass
         return removed
 
+    def clear(self, key: str) -> bool:
+        """Remove a pending confirmation key if present. Returns True if removed."""
+        with self.lock:
+            if key in self._data:
+                try:
+                    del self._data[key]
+                    try:
+                        self._save()
+                    except Exception:
+                        pass
+                    return True
+                except Exception:
+                    return False
+        return False
+
 
 def check_market_quality_for_entry(best_bid: Optional[float], best_ask: Optional[float], ask_size: Optional[float], settings) -> Tuple[bool, str, Dict[str, Any]]:
     """
