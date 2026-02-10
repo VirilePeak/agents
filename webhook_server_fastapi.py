@@ -3505,6 +3505,7 @@ def _check_signal_id_duplicate(signal_id: str, signal: str, request_id: str) -> 
 def webhook(payload: WebhookPayload):
     """Main webhook endpoint for TradingView alerts."""
     request_id = str(uuid.uuid4())[:8]
+    confirmed_conf_key = None
     
     try:
         global last_slot, _duplicate_signals_count
@@ -3586,6 +3587,8 @@ def webhook(payload: WebhookPayload):
                                 # confirmed -> continue pipeline
                                 if status == "confirmed":
                                     logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+                                    # remember confirmed key for potential cleanup if later blocked
+                                    confirmed_conf_key = conf_key
                             except Exception:
                                 logger.exception(f"[{request_id}] confirmation_store error, continuing without confirmation")
                     except Exception:
@@ -3732,6 +3735,13 @@ def webhook(payload: WebhookPayload):
                 global _blocked_session_ny, _blocked_ny_no_botmove
                 _blocked_session_ny += 1  # Legacy counter (backward compatibility)
                 _blocked_ny_no_botmove += 1  # New specific counter
+                # If this signal had previously passed confirmation, clear it to avoid stuck keys
+                try:
+                    if confirmed_conf_key:
+                        cleared = _confirmation_store.clear(confirmed_conf_key)
+                        logger.info(f"[{request_id}] confirmation_cleared_after_block: key={confirmed_conf_key} cleared={cleared}")
+                except Exception:
+                    logger.exception(f"[{request_id}] error clearing confirmation key {confirmed_conf_key}")
                 logger.info(
                     f"[{request_id}] BLOCKED: NY session without botMove or mr "
                     f"(botMove={bot_move}, mr={mr_flag})"
@@ -4289,6 +4299,13 @@ def webhook(payload: WebhookPayload):
                     logger.info(
                         f"[{request_id}] MQ_REJECT: reason={reason_mq} details={details_mq} time_to_end={time_to_end}"
                     )
+                    # Clear pending confirmation if this request had already confirmed earlier
+                    try:
+                        if confirmed_conf_key:
+                            cleared = _confirmation_store.clear(confirmed_conf_key)
+                            logger.info(f"[{request_id}] confirmation_cleared_after_mq_reject: key={confirmed_conf_key} cleared={cleared}")
+                    except Exception:
+                        logger.exception(f\"[{request_id}] error clearing confirmation key {confirmed_conf_key}\")
                     return {
                         "ok": True,
                         "ignored": True,
