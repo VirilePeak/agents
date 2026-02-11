@@ -41,6 +41,14 @@ app = FastAPI(
     description=f"Mode: {get_trading_mode_str()}"
 )
 
+# Register market-data health/metrics routes (safe to register even if adapter disabled)
+try:
+    from src.market_data.health_routes import register as _register_market_data_routes
+    _register_market_data_routes(app)
+except Exception:
+    # Don't fail startup if routes can't be registered (keeps behavior stable in tests)
+    logger.exception("Failed to register market-data health routes")
+
 # Server startup time for uptime calculation
 _server_start_time = None
 
