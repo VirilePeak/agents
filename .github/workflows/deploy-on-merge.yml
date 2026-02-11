@@ -6,6 +6,7 @@ name: Deploy on Merge (optional)
 # - DEPLOY_USER
 # - DEPLOY_SSH_KEY
 # - DEPLOY_TARGET
+# - DEPLOY_PORT (optional, defaults to 22)
 #
 # To enable: add the above secrets in GitHub → Settings → Secrets → Actions.
 
@@ -41,35 +42,45 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     env:
-      HAS_DEPLOY_SECRETS: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_SSH_KEY != '' }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check deploy secrets
+        id: check-secrets
+        run: |
+          if [ -n "$DEPLOY_HOST" ] && [ -n "$DEPLOY_SSH_KEY" ]; then
+            echo "has_secrets=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_secrets=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Prepare SSH key
-        if: env.HAS_DEPLOY_SECRETS == 'true'
+        if: steps.check-secrets.outputs.has_secrets == 'true'
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_rsa
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
       - name: Ensure known_hosts (optional)
-        if: env.HAS_DEPLOY_SECRETS == 'true'
+        if: steps.check-secrets.outputs.has_secrets == 'true'
         run: |
-          ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts || true
+          PORT="${DEPLOY_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts || true
 
       - name: Copy files to target via scp
-        if: env.HAS_DEPLOY_SECRETS == 'true'
+        if: steps.check-secrets.outputs.has_secrets == 'true'
         run: |
-          TARGET="${{ secrets.DEPLOY_TARGET }}"
-          HOST="${{ secrets.DEPLOY_HOST }}"
-          USER="${{ secrets.DEPLOY_USER }}"
-          PORT="${{ secrets.DEPLOY_PORT }}"
-          if [ -z "$PORT" ]; then PORT=22; fi
-          echo "Deploying to $USER@$HOST:$TARGET (port $PORT) using rsync with .deployignore"
+          PORT="${DEPLOY_PORT:-22}"
+          echo "Deploying to $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_TARGET (port $PORT) using rsync with .deployignore"
           # Prefer using .deployignore in repo root to control excludes.
           if [ -f .deployignore ]; then
-            rsync -az --delete --exclude-from='.deployignore' -e "ssh -p $PORT -o StrictHostKeyChecking=yes" . "$USER@$HOST:$TARGET"
+            rsync -az --delete --exclude-from='.deployignore' -e "ssh -p $PORT -o StrictHostKeyChecking=yes" . "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_TARGET"
           else
             echo ".deployignore not found, using conservative inline excludes"
             rsync -az --delete \
@@ -85,5 +96,5 @@ jobs:
               --exclude='*.sqlite' \
               --exclude='*.db' \
               --exclude='logs/' \
-              -e "ssh -p $PORT -o StrictHostKeyChecking=yes" . "$USER@$HOST:$TARGET"
+              -e "ssh -p $PORT -o StrictHostKeyChecking=yes" . "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_TARGET"
           fi

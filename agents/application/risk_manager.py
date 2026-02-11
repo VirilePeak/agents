@@ -43,8 +43,10 @@ class RiskManager:
         base = float(base_size if base_size is not None else settings.PAPER_USDC)
         if confidence is None:
             return max(0.01, base)
-        # Simple scaling: conf 4/5 => 1.0x/1.25x
-        scale = 1.0 + max(0, confidence - settings.MIN_CONFIDENCE) * 0.25
+        # Aggressive confidence scaling: higher confidence = bigger size
+        # conf 5: 1.0x, conf 6: 1.5x, conf 7: 2.0x, conf 8: 2.5x, conf 9+: 3.0x
+        scale_map = {5: 1.0, 6: 1.5, 7: 2.0, 8: 2.5, 9: 3.0, 10: 3.0}
+        scale = scale_map.get(confidence, 1.0 + max(0, confidence - settings.MIN_CONFIDENCE) * 0.5)
         return max(0.01, base * scale)
 
     def check_exposure(self, proposed_trade_size: float, active_trades: Dict[str, Any]) -> ExposureCheck:
@@ -90,12 +92,15 @@ class RiskManager:
         threshold = float(settings.SOFT_STOP_ADVERSE_MOVE)
         side = str(getattr(trade, "side", "")).upper()
         # UP/BULL loses when price drops; DOWN/BEAR loses when price rises
+        # Use absolute price move (not percentage of entry) for fairer stops
+        # on binary markets where prices are bounded [0, 1]
+        adverse_move = 0.0
         if side in ("UP", "BULL", "BUY_UP"):
-            if current_price <= entry_price * (1.0 - threshold):
-                return ExitCheck(True, ExitReason.SOFT_STOP)
+            adverse_move = entry_price - current_price  # positive when price drops
         elif side in ("DOWN", "BEAR", "BUY_DOWN"):
-            if current_price >= entry_price * (1.0 + threshold):
-                return ExitCheck(True, ExitReason.SOFT_STOP)
+            adverse_move = current_price - entry_price  # positive when price rises
+        if adverse_move >= threshold:
+            return ExitCheck(True, ExitReason.SOFT_STOP)
         return ExitCheck(False, None)
 
     def check_time_stop(self, trade: Any, current_price: float, bars_elapsed: int) -> ExitCheck:

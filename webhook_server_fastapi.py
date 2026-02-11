@@ -68,6 +68,30 @@ _signal_id_cache: Dict[str, float] = {}
 _signal_id_cache_ttl_seconds = 30 * 60  # 30 minutes
 _duplicate_signals_count = 0
 
+# MarketData adapter singleton and tasks (managed on startup/shutdown)
+_market_data_adapter = None
+_market_data_tasks: list = []
+
+
+@app.on_event("shutdown")
+async def _market_data_shutdown():
+    global _market_data_adapter, _market_data_tasks
+    logger.info("Shutdown event: stopping market data adapter and tasks")
+    # Cancel tasks
+    for t in list(_market_data_tasks):
+        try:
+            t.cancel()
+        except Exception:
+            logger.exception("Failed to cancel market data task")
+    _market_data_tasks.clear()
+    # Stop adapter if running
+    if _market_data_adapter:
+        try:
+            await _market_data_adapter.stop()
+            logger.info("MarketDataAdapter stopped")
+        except Exception:
+            logger.exception("Error stopping MarketDataAdapter during shutdown")
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
@@ -133,6 +157,30 @@ async def startup_event():
     
     logger.info(f"Server starting on {settings.APP_HOST}:{settings.APP_PORT}")
     logger.info("=" * 60)
+
+    # Initialize MarketDataAdapter (if enabled). Start idempotently and register event consumer task.
+    global _market_data_adapter, _market_data_tasks
+    try:
+        if getattr(settings, "MARKET_DATA_WS_ENABLED", True):
+            if _market_data_adapter is None:
+                _market_data_adapter = MarketDataAdapter()
+            # start adapter safely
+            try:
+                await _market_data_adapter.start()
+                logger.info("MarketDataAdapter started on startup")
+                # start lightweight consumer task that processes events and updates PnL (non-blocking)
+                try:
+                    t = asyncio.create_task(market_data_event_consumer())
+                    _market_data_tasks.append(t)
+                    logger.info("MarketData event consumer scheduled")
+                except Exception:
+                    logger.exception("Failed to schedule market data event consumer")
+            except Exception:
+                logger.exception("Failed to start MarketDataAdapter")
+        else:
+            logger.info("MarketData adapter disabled via settings (MARKET_DATA_WS_ENABLED=False)")
+    except Exception:
+        logger.exception("Error during MarketDataAdapter initialization")
     
     # ─────────────────────────────────────────────
     # SESSION MANAGEMENT: Initialize SESSION_ID and PHASE2_SESSION_ID

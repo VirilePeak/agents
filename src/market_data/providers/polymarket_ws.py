@@ -1,0 +1,174 @@
+from __future__ import annotations
+import asyncio
+import json
+import logging
+from typing import List, Optional
+
+import websockets
+import time
+
+from ..schema import MarketEvent, OrderBookSnapshot
+from .base import AbstractMarketDataProvider
+from ..telemetry import telemetry
+
+logger = logging.getLogger(__name__)
+
+
+class PolymarketWSProvider(AbstractMarketDataProvider):
+    def __init__(self, url: str, channel: str = "market", ping_interval: int = 10, pong_timeout: int = 30) -> None:
+        super().__init__()
+        self.url = url.rstrip("/") + f"/ws/{channel}"
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+        self._subs: set[str] = set()
+        self._ws = None
+        self._ping_interval = ping_interval
+        self._pong_timeout = pong_timeout
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except Exception:
+                pass
+        # close websocket if open
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+
+    async def subscribe(self, token_ids: List[str]) -> None:
+        for t in token_ids:
+            self._subs.add(t)
+        # If websocket connected, send subscription
+        if self._ws and self._ws.open:
+            await self._send_subscribe(list(token_ids))
+
+    async def unsubscribe(self, token_ids: List[str]) -> None:
+        for t in token_ids:
+            self._subs.discard(t)
+        if self._ws and self._ws.open:
+            await self._send_unsubscribe(list(token_ids))
+
+    async def _send_subscribe(self, token_ids: List[str]) -> None:
+        if not token_ids:
+            return
+        msg = {"assets_ids": token_ids, "type": "market"}
+        try:
+            await self._ws.send(json.dumps(msg))
+        except Exception as e:
+            logger.debug("subscribe send failed: %s", e)
+
+    async def _send_unsubscribe(self, token_ids: List[str]) -> None:
+        if not token_ids:
+            return
+        msg = {"assets_ids": token_ids, "operation": "unsubscribe"}
+        try:
+            await self._ws.send(json.dumps(msg))
+        except Exception as e:
+            logger.debug("unsubscribe send failed: %s", e)
+
+    async def _run_loop(self) -> None:
+        backoff = 1.0
+        while self._running:
+            try:
+                logger.info("Connecting to Polymarket WS %s", self.url)
+                async with websockets.connect(self.url, ping_interval=self._ping_interval, ping_timeout=self._pong_timeout) as ws:
+                    self._ws = ws
+                    telemetry.set_gauge("market_data_ws_connected", 1.0)
+                    backoff = 1.0
+                    # initial subscribe if any
+                    if self._subs:
+                        await self._send_subscribe(list(self._subs))
+
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                        except Exception:
+                            continue
+                        # Normalize messages: handle 'book', 'price_change', 'last_trade_price'
+                        etype = msg.get("event_type") or msg.get("type") or msg.get("topic")
+                        token = msg.get("asset_id") or msg.get("asset_id") or msg.get("assetId") or msg.get("market")
+                        # Try to build OrderBookSnapshot for 'book' messages
+                        # update last-msg timestamp for telemetry
+                        telemetry.set_last_msg_ts(time.time())
+                        if etype == "book":
+                            bids = msg.get("bids") or msg.get("buys") or []
+                            asks = msg.get("asks") or msg.get("sells") or []
+                            raw_ob = {"bids": bids, "asks": asks}
+                            snapshot = OrderBookSnapshot.from_raw(str(msg.get("asset_id") or token), raw_ob, source="ws")
+                            ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else float(asyncio.get_event_loop().time()), type="book", token_id=snapshot.token_id, best_bid=snapshot.best_bid, best_ask=snapshot.best_ask, spread_pct=snapshot.spread_pct, data=msg)
+                            if self.on_event:
+                                try:
+                                    self.on_event(ev)
+                                except Exception:
+                                    logger.exception("on_event handler failed")
+                                # update telemetry
+                                telemetry.incr("market_data_messages_total", 1)
+                                telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                        elif etype == "price_change":
+                            # price_changes array
+                            changes = msg.get("price_changes") or msg.get("priceChanges") or []
+                            for pc in changes:
+                                token_id = str(pc.get("asset_id") or pc.get("assetId") or token)
+                                ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else float(asyncio.get_event_loop().time()), type="price_change", token_id=token_id, best_bid=pc.get("best_bid"), best_ask=pc.get("best_ask"), spread_pct=None, data=pc)
+                                if self.on_event:
+                                    try:
+                                        self.on_event(ev)
+                                    except Exception:
+                                        logger.exception("on_event handler failed")
+                                telemetry.incr("market_data_messages_total", 1)
+                                telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                        elif etype == "last_trade_price":
+                            token_id = str(msg.get("asset_id") or token)
+                            ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else float(asyncio.get_event_loop().time()), type="trade", token_id=token_id, best_bid=None, best_ask=None, spread_pct=None, data=msg)
+                            if self.on_event:
+                                try:
+                                    self.on_event(ev)
+                                except Exception:
+                                    logger.exception("on_event handler failed")
+                            telemetry.incr("market_data_messages_total", 1)
+                            telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                        else:
+                            # ignore other types
+                            continue
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.exception("WebSocket connection error: %s", e)
+                telemetry.incr("market_data_reconnect_total", 1)
+                telemetry.set_gauge("market_data_ws_connected", 0.0)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+        logger.info("PolymarketWSProvider stopped")
+
+    @staticmethod
+    def parse_raw_message(msg: dict):
+        # Parse raw Polymarket WS message dict into list of MarketEvent instances.
+        events = []
+        etype = msg.get("event_type") or msg.get("type") or msg.get("topic")
+        if etype == "book":
+            token = str(msg.get("asset_id") or msg.get("assetId") or msg.get("market") or "")
+            ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else time.time(), type="book", token_id=token, best_bid=None, best_ask=None, spread_pct=None, data=msg)
+            events.append(ev)
+        elif etype == "price_change":
+            changes = msg.get("price_changes") or msg.get("priceChanges") or []
+            for pc in changes:
+                token_id = str(pc.get("asset_id") or pc.get("assetId") or "")
+                ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else time.time(), type="price_change", token_id=token_id, best_bid=pc.get("best_bid"), best_ask=pc.get("best_ask"), spread_pct=None, data=pc)
+                events.append(ev)
+        elif etype == "last_trade_price":
+            token_id = str(msg.get("asset_id") or "")
+            ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else time.time(), type="trade", token_id=token_id, best_bid=None, best_ask=None, spread_pct=None, data=msg)
+            events.append(ev)
+        return events
+

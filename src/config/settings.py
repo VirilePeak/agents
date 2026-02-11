@@ -30,16 +30,16 @@ class Settings:
     # Risk / trading
     BASE_RISK_PCT: float = 0.02
     MAX_EXPOSURE_PCT: float = 0.25
-    SOFT_STOP_ADVERSE_MOVE: float = 0.15
+    SOFT_STOP_ADVERSE_MOVE: float = 0.10   # 10% (was 15% – tighter stop to cut losses faster)
     TIME_STOP_BARS: int = 2
     ENABLE_SESSION_FILTER: bool = True
     INITIAL_EQUITY: float = 100.0
     PAPER_USDC: float = 1.0
 
     # Confidence / confirmation
-    MIN_CONFIDENCE: int = 4
-    MAX_CONFIDENCE: int = 5
-    ALLOW_CONF_4: bool = True
+    MIN_CONFIDENCE: int = 5                 # was 4 – skip lowest-quality signals
+    MAX_CONFIDENCE: int = 10                # was 5 – allow high-confidence signals through
+    ALLOW_CONF_4: bool = False              # was True – conf 4 trades were mostly losers
     CONFIRM_TTL_SECONDS: int = 90
     REQUIRE_RAWCONF: bool = False
     MISSING_RAWCONF_ACTION: str = "default_to_5"
@@ -78,8 +78,13 @@ class Settings:
     # Win-rate upgrade (feature flag)
     WINRATE_UPGRADE_ENABLED: bool = False  # safe default: disabled
 
+    # Market Quality Gate
+    ENABLE_MARKET_QUALITY_GATE: bool = True
+    MARKET_QUALITY_MODE: str = "enforce"    # was "shadow" – now BLOCKS trades with bad orderbook
+    REQUIRE_BEST_ASK: bool = True           # must have sellers to buy
+
     # Market Quality (entry) params
-    MAX_SPREAD_ENTRY: float = 0.10
+    MAX_SPREAD_ENTRY: float = 0.05          # 5% max spread (was 10% – tighter to avoid bad fills)
     MIN_ASK_SIZE: float = 5.0
     ENFORCE_DEPTH: bool = True  # if True, require ask size available
 
@@ -96,6 +101,15 @@ class Settings:
     # Exit safety
     MAX_SPREAD_EXIT: float = 0.15
     MAX_HOLD_SECONDS: int = 900  # 15 minutes
+    
+    # MarketData Adapter
+    MARKET_DATA_WS_ENABLED: bool = True
+    MARKET_DATA_WS_URL: str = "wss://ws-subscriptions-clob.polymarket.com"
+    MARKET_DATA_WS_PING_INTERVAL: int = 10
+    MARKET_DATA_WS_PONG_TIMEOUT: int = 30
+    MARKET_DATA_WS_RECONNECT_MAX: int = 30
+    MARKET_DATA_CACHE_STALE_SECONDS: float = 30.0
+    MARKET_DATA_BUS_QUEUE_SIZE: int = 1000
 
 
 _settings: Optional[Settings] = None
@@ -166,6 +180,9 @@ def _load_from_env(settings: Settings) -> None:
     set_if("GAMMA_API", str)
     # Win-rate upgrade envs
     set_if("WINRATE_UPGRADE_ENABLED", lambda v: parse_bool(v, settings.WINRATE_UPGRADE_ENABLED))
+    set_if("ENABLE_MARKET_QUALITY_GATE", lambda v: parse_bool(v, settings.ENABLE_MARKET_QUALITY_GATE))
+    set_if("MARKET_QUALITY_MODE", str)
+    set_if("REQUIRE_BEST_ASK", lambda v: parse_bool(v, settings.REQUIRE_BEST_ASK))
     set_if("REQUIRE_CONFIRMATION", lambda v: parse_bool(v, settings.REQUIRE_CONFIRMATION))
     set_if("CONFIRMATION_DELAY_SECONDS", lambda v: parse_int(v, settings.CONFIRMATION_DELAY_SECONDS))
     set_if("CONFIRMATION_TTL_SECONDS", lambda v: parse_int(v, settings.CONFIRMATION_TTL_SECONDS))
@@ -177,6 +194,14 @@ def _load_from_env(settings: Settings) -> None:
     set_if("MAX_SPREAD_EXIT", lambda v: parse_float(v, settings.MAX_SPREAD_EXIT))
     set_if("MAX_HOLD_SECONDS", lambda v: parse_int(v, settings.MAX_HOLD_SECONDS))
     set_if("PENDING_CONFIRM_PATH", str)
+    # MarketData envs
+    set_if("MARKET_DATA_WS_ENABLED", lambda v: parse_bool(v, settings.MARKET_DATA_WS_ENABLED))
+    set_if("MARKET_DATA_WS_URL", str)
+    set_if("MARKET_DATA_WS_PING_INTERVAL", lambda v: parse_int(v, settings.MARKET_DATA_WS_PING_INTERVAL))
+    set_if("MARKET_DATA_WS_PONG_TIMEOUT", lambda v: parse_int(v, settings.MARKET_DATA_WS_PONG_TIMEOUT))
+    set_if("MARKET_DATA_WS_RECONNECT_MAX", lambda v: parse_int(v, settings.MARKET_DATA_WS_RECONNECT_MAX))
+    set_if("MARKET_DATA_CACHE_STALE_SECONDS", lambda v: parse_float(v, settings.MARKET_DATA_CACHE_STALE_SECONDS))
+    set_if("MARKET_DATA_BUS_QUEUE_SIZE", lambda v: parse_int(v, settings.MARKET_DATA_BUS_QUEUE_SIZE))
 
 
 def get_settings() -> Settings:
