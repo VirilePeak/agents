@@ -410,29 +410,26 @@ class FastEntryEngine:
             except Exception:
                 pass
 
-            if rm:
-                try:
-                    allowed, entry_reason, entry_details = rm.check_entry_allowed(
-                        token_id=signal.token_id,
-                        confidence=None,
-                        market_quality_healthy=None,
-                        adapter=self.polymarket,
-                        proposed_size=self.leg1_size_usdc,
-                    )
-                    entry_allowed = allowed
-                except Exception as e:
-                    logger.debug(f"Entry gate check failed: {e}")
-
-            if not entry_allowed:
-                logger.info(f"LEG1_ENTRY_BLOCKED {signal.token_id[:16]} reason={entry_reason} details={entry_details}")
+            # Use central OrderExecutor to enforce gate
+            try:
+                from src.order_executor import place_entry_order_with_gate
+                res = place_entry_order_with_gate(
+                    polymarket=self.polymarket,
+                    token_id=signal.token_id,
+                    price=signal.current_price,
+                    size=self.leg1_size_usdc,
+                    side="BUY",
+                    confidence=None,
+                    market_quality_healthy=None,
+                    adapter=self.polymarket,
+                )
+                if not res.get("allowed", False):
+                    logger.info(f"LEG1_ENTRY_BLOCKED {signal.token_id[:16]} reason={res.get('reason')} details={res.get('details')}")
+                    return None
+                order_id = res.get("order_id")
+            except Exception as e:
+                logger.error(f"OrderExecutor failed: {e}")
                 return None
-
-            order_id = self.polymarket.execute_order(
-                price=signal.current_price,
-                size=self.leg1_size_usdc,
-                side="BUY",
-                token_id=signal.token_id,
-            )
             
             # Measure t_order_ack (immediately after receiving order_id)
             t_order_ack = self._monotonic_ms()

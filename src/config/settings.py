@@ -123,6 +123,8 @@ class Settings:
     KILL_SWITCH_MAX_REALIZED_LOSS: float = -5.0
     KILL_SWITCH_MIN_WINRATE: float = 0.25
     KILL_SWITCH_COOLDOWN_SECONDS: int = 900
+    # Enforce gate at low-level Polymarket client to prevent bypass.
+    ENTRY_GATE_ENFORCE_POLY: bool = True
 
 
 _settings: Optional[Settings] = None
