@@ -26,6 +26,13 @@ from src.utils.helpers import (
 )
 from src.utils.winrate_upgrade import ConfirmationStore, check_market_quality_for_entry, compute_time_to_market_end
 
+# MarketDataAdapter import (optional - don't fail startup if unavailable)
+try:
+    from src.market_data.adapter import MarketDataAdapter
+except Exception:
+    MarketDataAdapter = None
+    # logger may not be initialized yet; defer logging after setup_logging call
+
 # Initialize settings and logging
 settings = get_settings()
 setup_logging(settings)
