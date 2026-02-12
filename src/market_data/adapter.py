@@ -7,6 +7,7 @@ from .schema import OrderBookSnapshot, MarketEvent
 from .event_bus import AsyncEventBus
 from .cache import OrderBookCache
 from .providers.polymarket_ws import PolymarketWSProvider
+from .providers.polymarket_rtds import PolymarketRTDSProvider
 
 from src.config.settings import get_settings
 
@@ -23,6 +24,15 @@ class MarketDataAdapter:
         self.cache = OrderBookCache()
         self.provider = provider or PolymarketWSProvider(url, channel="market", ping_interval=ping, pong_timeout=pong)
         self.provider.on_event = self._on_provider_event
+        # Optional RTDS provider (config gated)
+        self.rtds_provider = None
+        if getattr(settings, "MARKET_DATA_RTDS_ENABLED", False):
+            rtds_url = getattr(settings, "MARKET_DATA_RTDS_URL", "")
+            try:
+                self.rtds_provider = PolymarketRTDSProvider(rtds_url)
+                self.rtds_provider.on_event = self._on_provider_event
+            except Exception:
+                logger.exception("Failed to init RTDS provider")
         self._subs: Set[str] = set()
         self._started = False
 
@@ -31,10 +41,14 @@ class MarketDataAdapter:
             return
         self._started = True
         await self.provider.start()
+        if self.rtds_provider:
+            await self.rtds_provider.start()
         logger.info("MarketDataAdapter started")
 
     async def stop(self) -> None:
         await self.provider.stop()
+        if self.rtds_provider:
+            await self.rtds_provider.stop()
         self._started = False
         logger.info("MarketDataAdapter stopped")
 
@@ -43,12 +57,23 @@ class MarketDataAdapter:
             return
         self._subs.add(token_id)
         await self.provider.subscribe([token_id])
+        # RTDS provider uses topic-based subscriptions; forward token if present
+        if self.rtds_provider:
+            try:
+                await self.rtds_provider.subscribe([token_id])
+            except Exception:
+                logger.exception("RTDS subscribe failed")
 
     async def unsubscribe(self, token_id: str) -> None:
         if token_id not in self._subs:
             return
         self._subs.discard(token_id)
         await self.provider.unsubscribe([token_id])
+        if self.rtds_provider:
+            try:
+                await self.rtds_provider.unsubscribe([token_id])
+            except Exception:
+                logger.exception("RTDS unsubscribe failed")
 
     def get_orderbook(self, token_id: str) -> OrderBookSnapshot | None:
         snap = self.cache.get(token_id)
