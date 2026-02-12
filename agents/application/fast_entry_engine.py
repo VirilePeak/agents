@@ -389,6 +389,44 @@ class FastEntryEngine:
         
         try:
             # Execute market order
+            # Check central entry gates before sending order
+            try:
+                from agents.application.risk_manager import get_settings as _rm_get_settings  # noqa: F401
+            except Exception:
+                pass
+            try:
+                from agents.application.risk_manager import RiskManager
+                rm = get_risk_manager() if 'get_risk_manager' in globals() else None
+            except Exception:
+                rm = None
+
+            entry_allowed = True
+            entry_reason = "ok"
+            entry_details = {}
+            try:
+                # Attempt to use global risk manager if available
+                from webhook_server_fastapi import get_risk_manager
+                rm = get_risk_manager()
+            except Exception:
+                pass
+
+            if rm:
+                try:
+                    allowed, entry_reason, entry_details = rm.check_entry_allowed(
+                        token_id=signal.token_id,
+                        confidence=None,
+                        market_quality_healthy=None,
+                        adapter=self.polymarket,
+                        proposed_size=self.leg1_size_usdc,
+                    )
+                    entry_allowed = allowed
+                except Exception as e:
+                    logger.debug(f"Entry gate check failed: {e}")
+
+            if not entry_allowed:
+                logger.info(f"LEG1_ENTRY_BLOCKED {signal.token_id[:16]} reason={entry_reason} details={entry_details}")
+                return None
+
             order_id = self.polymarket.execute_order(
                 price=signal.current_price,
                 size=self.leg1_size_usdc,

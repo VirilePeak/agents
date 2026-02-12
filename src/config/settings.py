@@ -110,6 +110,19 @@ class Settings:
     MARKET_DATA_WS_RECONNECT_MAX: int = 30
     MARKET_DATA_CACHE_STALE_SECONDS: float = 30.0
     MARKET_DATA_BUS_QUEUE_SIZE: int = 1000
+    # Entry / Risk Gates (conservative defaults)
+    MAX_ENTRY_SPREAD: float = 0.05
+    HARD_REJECT_SPREAD: float = 0.30
+    REQUIRE_MARKET_QUALITY_HEALTHY: bool = True
+    DISABLE_CONFIDENCE_GE: int = 7
+    MIN_TOP_LEVEL_SIZE: float = 0.0
+    ENTRY_REQUIRE_FRESH_BOOK: bool = True
+    ENTRY_MAX_BOOK_AGE_SECONDS: int = 20
+    KILL_SWITCH_ENABLED: bool = True
+    KILL_SWITCH_LOOKBACK_CLOSED: int = 20
+    KILL_SWITCH_MAX_REALIZED_LOSS: float = -5.0
+    KILL_SWITCH_MIN_WINRATE: float = 0.25
+    KILL_SWITCH_COOLDOWN_SECONDS: int = 900
 
 
 _settings: Optional[Settings] = None
@@ -202,6 +215,18 @@ def _load_from_env(settings: Settings) -> None:
     set_if("MARKET_DATA_WS_RECONNECT_MAX", lambda v: parse_int(v, settings.MARKET_DATA_WS_RECONNECT_MAX))
     set_if("MARKET_DATA_CACHE_STALE_SECONDS", lambda v: parse_float(v, settings.MARKET_DATA_CACHE_STALE_SECONDS))
     set_if("MARKET_DATA_BUS_QUEUE_SIZE", lambda v: parse_int(v, settings.MARKET_DATA_BUS_QUEUE_SIZE))
+    set_if("MAX_ENTRY_SPREAD", lambda v: parse_float(v, settings.MAX_ENTRY_SPREAD))
+    set_if("HARD_REJECT_SPREAD", lambda v: parse_float(v, settings.HARD_REJECT_SPREAD))
+    set_if("REQUIRE_MARKET_QUALITY_HEALTHY", lambda v: parse_bool(v, settings.REQUIRE_MARKET_QUALITY_HEALTHY))
+    set_if("DISABLE_CONFIDENCE_GE", lambda v: parse_int(v, settings.DISABLE_CONFIDENCE_GE))
+    set_if("MIN_TOP_LEVEL_SIZE", lambda v: parse_float(v, settings.MIN_TOP_LEVEL_SIZE))
+    set_if("ENTRY_REQUIRE_FRESH_BOOK", lambda v: parse_bool(v, settings.ENTRY_REQUIRE_FRESH_BOOK))
+    set_if("ENTRY_MAX_BOOK_AGE_SECONDS", lambda v: parse_int(v, settings.ENTRY_MAX_BOOK_AGE_SECONDS))
+    set_if("KILL_SWITCH_ENABLED", lambda v: parse_bool(v, settings.KILL_SWITCH_ENABLED))
+    set_if("KILL_SWITCH_LOOKBACK_CLOSED", lambda v: parse_int(v, settings.KILL_SWITCH_LOOKBACK_CLOSED))
+    set_if("KILL_SWITCH_MAX_REALIZED_LOSS", lambda v: parse_float(v, settings.KILL_SWITCH_MAX_REALIZED_LOSS))
+    set_if("KILL_SWITCH_MIN_WINRATE", lambda v: parse_float(v, settings.KILL_SWITCH_MIN_WINRATE))
+    set_if("KILL_SWITCH_COOLDOWN_SECONDS", lambda v: parse_int(v, settings.KILL_SWITCH_COOLDOWN_SECONDS))
 
 
 def get_settings() -> Settings:
