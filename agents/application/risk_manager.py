@@ -9,6 +9,8 @@ import json
 import time
 from glob import glob
 from pathlib import Path
+import os
+import tempfile
 
 
 class ExitReason(str, Enum):
@@ -39,6 +41,16 @@ class RiskManager:
         self.current_equity = float(initial_equity)
         self.max_exposure_pct = float(max_exposure_pct)
         self.base_risk_pct = float(base_risk_pct)
+        # Kill-switch persistent state
+        self.kill_switch_until_ts: float | None = None
+        self.kill_switch_reason: str | None = None
+        self.kill_switch_last_trigger_ts: float | None = None
+        # Load persisted state if available
+        try:
+            self._load_risk_state()
+        except Exception:
+            # Do not fail initialization on load errors
+            pass
 
     def update_equity(self, realized_pnl: float) -> None:
         self.current_equity += float(realized_pnl or 0.0)
@@ -146,11 +158,79 @@ class RiskManager:
         closed_sorted = sorted(closed, key=key_fn, reverse=True)
         return closed_sorted
 
+    # ---------------------------
+    # Risk state persistence
+    # ---------------------------
+    def _risk_state_path(self) -> Path:
+        settings = get_settings()
+        return Path(getattr(settings, "RISK_STATE_PATH", "data/risk_state.json"))
+
+    def _load_risk_state(self) -> None:
+        p = self._risk_state_path()
+        if not p.exists():
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.kill_switch_until_ts = data.get("kill_switch_until_ts")
+            self.kill_switch_reason = data.get("kill_switch_reason")
+            self.kill_switch_last_trigger_ts = data.get("kill_switch_last_trigger_ts")
+            # ensure telemetry reflects loaded state
+            if self.kill_switch_until_ts and time.time() < float(self.kill_switch_until_ts):
+                telemetry.set_gauge("market_data_kill_switch_active", 1)
+            else:
+                telemetry.set_gauge("market_data_kill_switch_active", 0)
+        except Exception:
+            # ignore load errors
+            return
+
+    def _save_risk_state_atomic(self) -> None:
+        p = self._risk_state_path()
+        d = {
+            "kill_switch_until_ts": self.kill_switch_until_ts,
+            "kill_switch_reason": self.kill_switch_reason,
+            "kill_switch_last_trigger_ts": self.kill_switch_last_trigger_ts,
+        }
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".risk_state.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(p))
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+
+    def _clear_risk_state(self) -> None:
+        self.kill_switch_until_ts = None
+        self.kill_switch_reason = None
+        self.kill_switch_last_trigger_ts = None
+        telemetry.set_gauge("market_data_kill_switch_active", 0)
+        p = self._risk_state_path()
+        try:
+            if p.exists():
+                os.remove(p)
+        except Exception:
+            pass
+
     def _check_kill_switch(self) -> tuple[bool, str]:
         settings = get_settings()
         if not settings.KILL_SWITCH_ENABLED:
             telemetry.set_gauge("market_data_kill_switch_active", 0)
             return False, "kill_switch_disabled"
+
+        # If a cooldown is already set and active, report active (do not recompute)
+        now = time.time()
+        if self.kill_switch_until_ts and now < float(self.kill_switch_until_ts):
+            telemetry.set_gauge("market_data_kill_switch_active", 1)
+            return True, f"kill_switch_active(cooldown_until={self.kill_switch_until_ts})"
+
+        # Otherwise compute from recent closed trades
         closed = self._recent_closed_trades()
         lookback = int(settings.KILL_SWITCH_LOOKBACK_CLOSED)
         recent = closed[:lookback]
@@ -162,9 +242,25 @@ class RiskManager:
         wins = sum(1 for p in pnls if p > 0)
         winrate = wins / len(pnls) if pnls else 0.0
         if realized_sum <= float(settings.KILL_SWITCH_MAX_REALIZED_LOSS) or winrate < float(settings.KILL_SWITCH_MIN_WINRATE):
+            # trigger cooldown
+            cooldown = int(settings.KILL_SWITCH_COOLDOWN_SECONDS)
+            self.kill_switch_last_trigger_ts = now
+            self.kill_switch_until_ts = now + float(cooldown)
+            self.kill_switch_reason = "kill_switch_threshold"
             telemetry.set_gauge("market_data_kill_switch_active", 1)
+            try:
+                self._save_risk_state_atomic()
+            except Exception:
+                pass
             return True, f"kill_switch_active(sum={realized_sum},winrate={winrate:.2f})"
+
         telemetry.set_gauge("market_data_kill_switch_active", 0)
+        # Clear any stale persisted state if present
+        if self.kill_switch_until_ts and now >= float(self.kill_switch_until_ts):
+            try:
+                self._clear_risk_state()
+            except Exception:
+                pass
         return False, "ok"
 
     def check_entry_allowed(
@@ -188,8 +284,23 @@ class RiskManager:
         }
 
         # Kill-switch check
+        # First: check cooldown/persistent kill-switch quickly
+        settings = get_settings()
+        now = now_ts or time.time()
+        if getattr(settings, "KILL_SWITCH_ENABLED", False):
+            if self.kill_switch_until_ts and now < float(self.kill_switch_until_ts):
+                telemetry.set_gauge("market_data_kill_switch_active", 1)
+                return False, "kill_switch_cooldown", {**details, "kill_switch_until": self.kill_switch_until_ts}
+            # if cooldown expired, clear state
+            if self.kill_switch_until_ts and now >= float(self.kill_switch_until_ts):
+                try:
+                    self._clear_risk_state()
+                except Exception:
+                    pass
+
         ks_active, ks_reason = self._check_kill_switch()
         if ks_active:
+            # _check_kill_switch handles setting telemetry and persisting state
             return False, "kill_switch", {**details, "kill_switch": ks_reason}
 
         # Confidence guard
