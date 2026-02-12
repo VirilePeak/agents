@@ -124,6 +124,22 @@ class Settings:
     KILL_SWITCH_MIN_WINRATE: float = 0.25
     KILL_SWITCH_COOLDOWN_SECONDS: int = 900
     RISK_STATE_PATH: str = "data/risk_state.json"
+    # ------------------------------------------------------------------
+    # Persistent Risk State
+    #
+    # RISK_STATE_PATH:
+    # Path to JSON file used to persist the kill-switch cooldown state.
+    # Default: data/risk_state.json
+    #
+    # Deployment notes:
+    # - Ensure the directory containing RISK_STATE_PATH is writable by the process
+    #   (e.g. create `data/` and set permissions, or override path in environment).
+    # - Override via environment variable:
+    #     export RISK_STATE_PATH=/var/lib/bot/risk_state.json
+    #
+    # The RiskManager writes the file atomically (temp + rename) and clears it
+    # automatically after the cooldown expires.
+    # ------------------------------------------------------------------
     # Enforce gate at low-level Polymarket client to prevent bypass.
     ENTRY_GATE_ENFORCE_POLY: bool = True
 
