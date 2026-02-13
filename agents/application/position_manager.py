@@ -262,6 +262,25 @@ class PositionManager:
             f"Created trade {trade_id} for market {market_id} "
             f"(side={side}, size={leg1_size}, entry_price={leg1_price_float:.6f}, timeout={trade.confirmation_timeout_seconds}s)"
         )
+        # Best-effort: ask MarketDataAdapter to subscribe to this token for realtime updates.
+        try:
+            # import lazily to avoid hard dependency
+            from webhook_server_fastapi import _market_data_adapter  # type: ignore
+            if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
+                try:
+                    import asyncio
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_market_data_adapter.subscribe(token_id))
+                except RuntimeError:
+                    # No running loop in this thread — run in background thread
+                    import threading
+                    threading.Thread(
+                        target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(token_id))
+                    ).start()
+                logger.info("PositionManager: scheduled MarketDataAdapter.subscribe for token %s", token_id)
+        except Exception:
+            # Non-fatal — continue without subscription
+            logger.debug("PositionManager: MarketDataAdapter subscribe not available or failed to schedule")
         
         return trade
     
