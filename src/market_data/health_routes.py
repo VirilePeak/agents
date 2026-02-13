@@ -63,3 +63,32 @@ def register(app: FastAPI) -> None:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    @app.get("/market-data/subscriptions")
+    async def market_data_subscriptions() -> Any:
+        """
+        Return current subscriptions with refcount (best-effort) and missing_cycles from reconcile state.
+        """
+        try:
+            # lazy import to avoid circular module init issues
+            import webhook_server_fastapi as ws  # type: ignore
+            adapter = getattr(ws, "_market_data_adapter", None)
+            desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
+            reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
+            if adapter is None:
+                return {"ok": False, "error": "adapter_unavailable", "active_subscriptions": 0, "tokens": []}
+
+            subs = set(getattr(adapter, "_subs", set()) or set())
+            tokens = []
+            # union of known tokens (adapter subs + last desired)
+            all_tokens = sorted(set(list(subs) + list(desired_refcount.keys())))
+            for tk in all_tokens:
+                refcount = int(desired_refcount.get(tk, 1 if tk in subs else 0))
+                missing = 0
+                if reconcile_state is not None:
+                    missing = int(getattr(reconcile_state, "missing_count", {}).get(tk, 0))
+                tokens.append({"token_id": tk, "refcount": refcount, "missing_cycles": missing})
+
+            return {"ok": True, "active_subscriptions": len(subs), "tokens": tokens}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+

@@ -86,6 +86,9 @@ _duplicate_signals_count = 0
 # MarketData adapter singleton and tasks (managed on startup/shutdown)
 _market_data_adapter = None
 _market_data_tasks: list = []
+# Reconcile / subscription state (populated by reconcile loop)
+_market_data_reconcile_state = None
+_market_data_desired_refcount: dict = {}
 
 
 async def market_data_event_consumer():
@@ -279,6 +282,12 @@ async def startup_event():
                         # Reconcile state with missing-counts to avoid flapping unsubscriptions
                         from src.market_data.reconcile import ReconcileState, reconcile_step
                         state = ReconcileState()
+                        # export reconcile state so admin endpoints can inspect missing cycles/refcounts
+                        try:
+                            # module-level globals for external inspection
+                            globals()["_market_data_reconcile_state"] = state
+                        except Exception:
+                            logger.debug("failed to set module-level reconcile state")
                         while True:
                             try:
                                 # Build desired_refcount from open trades
@@ -291,9 +300,15 @@ async def startup_event():
                                         continue
                                     desired_refcount[tk] = desired_refcount.get(tk, 0) + 1
 
+                                # update exported desired_refcount snapshot
+                                try:
+                                    globals()["_market_data_desired_refcount"] = desired_refcount
+                                except Exception:
+                                    logger.debug("failed to set module-level desired_refcount")
                                 # compute actions
                                 try:
-                                    res = reconcile_step(_market_data_adapter, desired_refcount, state, missing_threshold=3)
+                                    missing_threshold = getattr(settings, "MARKET_DATA_RECONCILE_MISSING_THRESHOLD", 3)
+                                    res = reconcile_step(_market_data_adapter, desired_refcount, state, missing_threshold=missing_threshold)
                                 except Exception:
                                     logger.exception("Reconcile step failed")
                                     res = {"to_subscribe": set(), "to_unsubscribe": set()}
