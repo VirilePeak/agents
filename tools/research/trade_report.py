@@ -264,7 +264,11 @@ def filter_recent(trades: List[Dict[str, Any]], last_n: Optional[int], since_hou
 
 def generate_markdown(report: Dict[str, Any], tz_name: str) -> str:
     lines = []
-    now = datetime.now(ZoneInfo(tz_name))
+    try:
+        now_tz = ZoneInfo(tz_name)
+    except Exception:
+        now_tz = timezone.utc
+    now = datetime.now(now_tz)
     lines.append(f"# Trade Performance Report — {now.isoformat()}\n")
     def add_kv(k, v):
         lines.append(f"- **{k}**: {v}")
