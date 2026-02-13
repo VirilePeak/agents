@@ -4541,12 +4541,21 @@ def webhook(payload: WebhookPayload):
                             f"entry_price={paper_trade.entry_price:.6f} "
                             f"(verified: matches fetched price)"
                         )
-                        # Subscribe adapter to token for realtime updates (best-effort)
+                        # Subscribe adapter to token for realtime updates (best-effort).
+                        # Use non-blocking scheduling because this code path may be sync.
                         try:
                             global _market_data_adapter
                             if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
-                                await _market_data_adapter.subscribe(chosen_token)
-                                logger.info(f"[{request_id}] MarketDataAdapter subscribed to token {chosen_token}")
+                                try:
+                                    loop = asyncio.get_running_loop()
+                                    loop.create_task(_market_data_adapter.subscribe(chosen_token))
+                                except RuntimeError:
+                                    # No running loop in this thread — schedule in background
+                                    import threading
+                                    threading.Thread(
+                                        target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(chosen_token))
+                                    ).start()
+                                logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled for token {chosen_token}")
                         except Exception:
                             logger.exception(f"[{request_id}] MarketDataAdapter.subscribe failed for {chosen_token}")
                         # Clear confirmed confirmation key after successful trade creation
