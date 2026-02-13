@@ -252,6 +252,53 @@ async def startup_event():
                     logger.info("MarketData event consumer scheduled")
                 except Exception:
                     logger.exception("Failed to schedule market data event consumer")
+                # start reconcile task to ensure open trades are subscribed (best-effort)
+                try:
+                    async def _reconcile_once():
+                        # one-off reconcile: subscribe to all open trade tokens
+                        try:
+                            if _market_data_adapter is None:
+                                return {"ok": False, "reason": "adapter_unavailable"}
+                            pm = get_position_manager()
+                            active = pm.get_active_trades_summary()
+                            tokens = set([t.get("token_id") for t in active if t.get("token_id")])
+                            subscribed = set(getattr(_market_data_adapter, "_subs", set()))
+                            to_sub = tokens - subscribed
+                            for tk in to_sub:
+                                try:
+                                    await _market_data_adapter.subscribe(tk)
+                                    logger.info("Bootstrap subscribe: requested token %s", str(tk)[:24])
+                                except Exception:
+                                    logger.exception("Bootstrap subscribe failed for %s", tk)
+                            return {"ok": True, "requested": list(to_sub)}
+                        except Exception:
+                            logger.exception("Bootstrap reconcile failed")
+                            return {"ok": False, "error": "exception"}
+                    # schedule background reconcile loop
+                    async def reconcile_loop(interval: int = 30):
+                        while True:
+                            try:
+                                await _reconcile_once()
+                                # heartbeat log
+                                try:
+                                    from src.market_data.telemetry import telemetry as _tele
+                                    last_age = _tele.get_snapshot().get("last_msg_age_s")
+                                    dropped = _tele.get_snapshot().get("counters", {}).get("market_data_eventbus_dropped_total", 0)
+                                except Exception:
+                                    last_age = None
+                                    dropped = 0
+                                subs_count = len(getattr(_market_data_adapter, "_subs", set())) if _market_data_adapter else 0
+                                logger.info(f\"MarketData reconcile heartbeat: active_subscriptions={subs_count}, last_msg_age_s={last_age}, ws_connected={bool(getattr(_market_data_adapter, '_started', False))}, dropped_total={dropped}\")
+                            except asyncio.CancelledError:
+                                break
+                            except Exception:
+                                logger.exception(\"Reconcile loop iteration failed\")
+                            await asyncio.sleep(interval)
+                    rt = asyncio.create_task(reconcile_loop(interval=getattr(settings, 'MARKET_DATA_RECONCILE_SECONDS', 30)))
+                    _market_data_tasks.append(rt)
+                    logger.info(\"MarketData reconcile loop scheduled\")
+                except Exception:
+                    logger.exception(\"Failed to schedule market-data reconcile loop\")
             except Exception:
                 logger.exception("Failed to start MarketDataAdapter")
         else:

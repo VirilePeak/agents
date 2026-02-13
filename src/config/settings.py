@@ -113,6 +113,8 @@ class Settings:
     # RTDS (optional) - real-time data stream provider settings
     MARKET_DATA_RTDS_ENABLED: bool = True
     MARKET_DATA_RTDS_URL: str = "wss://ws-live-data.polymarket.com"
+    # Reconcile interval (seconds) for subscribing open trades on startup and periodically
+    MARKET_DATA_RECONCILE_SECONDS: int = 30
     # Entry / Risk Gates (conservative defaults)
     MAX_ENTRY_SPREAD: float = 0.05
     HARD_REJECT_SPREAD: float = 0.30
