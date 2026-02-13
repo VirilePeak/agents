@@ -117,6 +117,9 @@ class Settings:
     MARKET_DATA_RECONCILE_SECONDS: int = 30
     # How many consecutive reconcile cycles a token must be missing before unsubscribe
     MARKET_DATA_RECONCILE_MISSING_THRESHOLD: int = 3
+    # Debug / admin endpoints toggle and simple token auth
+    DEBUG_ENDPOINTS_ENABLED: bool = False
+    DEBUG_ENDPOINTS_TOKEN: str | None = None
     # Entry / Risk Gates (conservative defaults)
     MAX_ENTRY_SPREAD: float = 0.05
     HARD_REJECT_SPREAD: float = 0.30
@@ -243,6 +246,8 @@ def _load_from_env(settings: Settings) -> None:
     set_if("MARKET_DATA_BUS_QUEUE_SIZE", lambda v: parse_int(v, settings.MARKET_DATA_BUS_QUEUE_SIZE))
     set_if("MARKET_DATA_RECONCILE_MISSING_THRESHOLD", lambda v: parse_int(v, settings.MARKET_DATA_RECONCILE_MISSING_THRESHOLD))
     set_if("MAX_ENTRY_SPREAD", lambda v: parse_float(v, settings.MAX_ENTRY_SPREAD))
+    set_if("DEBUG_ENDPOINTS_ENABLED", lambda v: parse_bool(v, settings.DEBUG_ENDPOINTS_ENABLED))
+    set_if("DEBUG_ENDPOINTS_TOKEN", str)
     set_if("HARD_REJECT_SPREAD", lambda v: parse_float(v, settings.HARD_REJECT_SPREAD))
     set_if("REQUIRE_MARKET_QUALITY_HEALTHY", lambda v: parse_bool(v, settings.REQUIRE_MARKET_QUALITY_HEALTHY))
     set_if("DISABLE_CONFIDENCE_GE", lambda v: parse_int(v, settings.DISABLE_CONFIDENCE_GE))

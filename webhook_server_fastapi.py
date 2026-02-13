@@ -89,6 +89,7 @@ _market_data_tasks: list = []
 # Reconcile / subscription state (populated by reconcile loop)
 _market_data_reconcile_state = None
 _market_data_desired_refcount: dict = {}
+_market_data_last_warn_ts: float = 0.0
 
 
 async def market_data_event_consumer():
@@ -339,6 +340,37 @@ async def startup_event():
                                     dropped = 0
                                 subs_count = len(getattr(_market_data_adapter, "_subs", set())) if _market_data_adapter else 0
                                 logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(_market_data_adapter, '_started', False))), str(dropped))
+                                # message-flow verification: if we have subscriptions but no recent messages, warn once per minute
+                                try:
+                                    from src.config.settings import get_settings as _get_settings
+                                    settings_local = _get_settings()
+                                    missing_threshold = getattr(settings_local, "MARKET_DATA_RECONCILE_MISSING_THRESHOLD", 3)
+                                except Exception:
+                                    settings_local = None
+                                try:
+                                    global _market_data_last_warn_ts
+                                    now_ts = time.time()
+                                    if subs_count > 0 and (last_age is None) and (now_ts - float(getattr(globals(), "_market_data_last_warn_ts", 0.0)) >= 60.0):
+                                        example_token = None
+                                        try:
+                                            example_token = next(iter(getattr(_market_data_adapter, "_subs", set())), None)
+                                        except Exception:
+                                            example_token = None
+                                        providers = {
+                                            "ws": bool(getattr(_market_data_adapter, "provider", None)),
+                                            "rtds": bool(getattr(_market_data_adapter, "rtds_provider", None)),
+                                        }
+                                        logger.warning(
+                                            "MarketData warning: no messages received but subscriptions>0; ws_connected=%s subs=%d last_msg_age=%s example_token=%s providers=%s",
+                                            str(bool(getattr(_market_data_adapter, "_started", False))),
+                                            subs_count,
+                                            str(last_age),
+                                            str(example_token),
+                                            str(providers),
+                                        )
+                                        _market_data_last_warn_ts = now_ts
+                                except Exception:
+                                    logger.debug("message-flow verification failed")
                             except asyncio.CancelledError:
                                 break
                             except Exception:

@@ -1,7 +1,8 @@
 from __future__ import annotations
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from typing import Any
 from src.market_data.telemetry import telemetry
+from src.config.settings import get_settings
 
 
 def register(app: FastAPI) -> None:
@@ -64,10 +65,19 @@ def register(app: FastAPI) -> None:
             return {"ok": False, "error": str(e)}
 
     @app.get("/market-data/subscriptions")
-    async def market_data_subscriptions() -> Any:
+    async def market_data_subscriptions(request: Request) -> Any:
         """
         Return current subscriptions with refcount (best-effort) and missing_cycles from reconcile state.
         """
+        settings = get_settings()
+        # protect debug/admin endpoint
+        if not getattr(settings, "DEBUG_ENDPOINTS_ENABLED", False):
+            raise HTTPException(status_code=403, detail="debug endpoints disabled")
+        token_required = getattr(settings, "DEBUG_ENDPOINTS_TOKEN", None)
+        if token_required:
+            header_token = request.headers.get("X-Debug-Token")
+            if header_token != token_required:
+                raise HTTPException(status_code=403, detail="invalid debug token")
         try:
             # lazy import to avoid circular module init issues
             import webhook_server_fastapi as ws  # type: ignore
