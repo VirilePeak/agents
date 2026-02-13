@@ -88,6 +88,68 @@ _market_data_adapter = None
 _market_data_tasks: list = []
 
 
+async def market_data_event_consumer():
+    """
+    Lightweight consumer that subscribes to the adapter EventBus and processes
+    normalized MarketEvent messages. Minimal responsibilities:
+      - update telemetry last_msg_ts
+      - perform simple realtime soft-stop checks against active trades (best-effort)
+    """
+    global _market_data_adapter
+    if _market_data_adapter is None:
+        logger.info("market_data_event_consumer: adapter not available, exiting")
+        return
+
+    sub_name = f"consumer_{int(time.time())}"
+    try:
+        q = _market_data_adapter.event_bus.subscribe(sub_name)
+    except Exception:
+        logger.exception("market_data_event_consumer: failed to subscribe")
+        return
+
+    try:
+        while True:
+            ev = await q.get()
+            try:
+                # telemetry
+                try:
+                    from src.market_data.telemetry import telemetry
+                    telemetry.set_last_msg_ts(getattr(ev, "ts", time.time()))
+                    telemetry.incr("market_data_messages_consumed_total", 1)
+                except Exception:
+                    logger.debug("Failed to update telemetry from market event")
+
+                # Best-effort realtime soft-stop check
+                try:
+                    pm = get_position_manager()
+                    rm = get_risk_manager()
+                    for trade in list(pm.active_trades.values()):
+                        if getattr(trade, "token_id", None) == getattr(ev, "token_id", None):
+                            # choose current price heuristic
+                            current_price = getattr(ev, "best_ask", None) or getattr(ev, "best_bid", None)
+                            if current_price is None:
+                                continue
+                            exit_check = rm.check_soft_stop(trade, float(current_price))
+                            if exit_check.should_exit:
+                                logger.info(f"Realtime soft-stop: exiting {trade.trade_id} reason={exit_check.reason}")
+                                try:
+                                    pm.exit_trade(trade.trade_id, exit_price=current_price, exit_reason=exit_check.reason.value if exit_check.reason else "soft_stop")
+                                except Exception:
+                                    logger.exception("Failed to execute realtime exit for %s", trade.trade_id)
+                except Exception:
+                    logger.debug("Realtime soft-stop processing skipped (no position/risk manager)")
+
+            except Exception:
+                logger.exception("Error processing market event")
+    except asyncio.CancelledError:
+        try:
+            _market_data_adapter.event_bus.unsubscribe(sub_name)
+        except Exception:
+            pass
+        logger.info("market_data_event_consumer: cancelled")
+        return
+
+
 @app.on_event("shutdown")
 async def _market_data_shutdown():
     global _market_data_adapter, _market_data_tasks
