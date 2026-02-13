@@ -3196,6 +3196,18 @@ async def smoke_trade(payload: SmokeTradePayload):
                 status_code=500,
                 detail="Failed to create trade (market may be locked)"
             )
+        # Best-effort: schedule adapter subscribe for smoke token in server process
+        try:
+            if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_market_data_adapter.subscribe(token_id))
+                except RuntimeError:
+                    import threading
+                    threading.Thread(target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(token_id))).start()
+                logger.info(f"Smoke test: scheduled MarketDataAdapter.subscribe for token {token_id}")
+        except Exception:
+            logger.exception("Smoke test: failed to schedule MarketDataAdapter.subscribe")
         
         # Log trade to paper_trades.jsonl (with session_id and trade_id)
         trade_record = {
