@@ -59,6 +59,11 @@ class MarketDataAdapter:
         logger.info("MarketDataAdapter: subscribing to token %s", token_id)
         await self.provider.subscribe([token_id])
         logger.info("MarketDataAdapter: subscribed to token %s (provider notified)", token_id)
+        try:
+            from .telemetry import telemetry
+            telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+        except Exception:
+            logger.debug("Failed to set telemetry gauge for active_subscriptions")
         # RTDS provider uses topic-based subscriptions; forward token if present
         if self.rtds_provider:
             try:
@@ -76,6 +81,11 @@ class MarketDataAdapter:
                 await self.rtds_provider.unsubscribe([token_id])
             except Exception:
                 logger.exception("RTDS unsubscribe failed")
+        try:
+            from .telemetry import telemetry
+            telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+        except Exception:
+            logger.debug("Failed to set telemetry gauge for active_subscriptions")
 
     def get_orderbook(self, token_id: str) -> OrderBookSnapshot | None:
         snap = self.cache.get(token_id)
