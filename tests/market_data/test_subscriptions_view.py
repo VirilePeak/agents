@@ -23,6 +23,9 @@ def test_subscriptions_view_reports_tokens(monkeypatch):
     state = ReconcileState()
     state.missing_count["T2"] = 1
     ws._market_data_reconcile_state = state
+    # enable debug endpoints for test
+    import src.config.settings as _s
+    _s.get_settings().DEBUG_ENDPOINTS_ENABLED = True
 
     with TestClient(app) as client:
         r = client.get("/market-data/subscriptions")
