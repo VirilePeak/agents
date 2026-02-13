@@ -138,6 +138,9 @@ def normalize_trade(d: Dict[str, Any], source_file: str) -> Dict[str, Any]:
     closed = d.get("exit_time_utc") or d.get("closed_at") or d.get("close_time") or d.get("exit_time")
     out["opened_at"] = parse_ts(opened)
     out["closed_at"] = parse_ts(closed)
+    # if pnl/realized exists but closed_at missing, use opened as closed timestamp fallback
+    if out["closed_at"] is None and any(k in d for k in ("realized_pnl", "pnl", "profit", "total_pnl")):
+        out["closed_at"] = out["opened_at"]
 
     # pnl
     pnl_keys = ["realized_pnl", "pnl", "profit", "profit_usd", "pnl_usd", "total_pnl"]
