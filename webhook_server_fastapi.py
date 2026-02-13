@@ -276,9 +276,44 @@ async def startup_event():
                             return {"ok": False, "error": "exception"}
                     # schedule background reconcile loop
                     async def reconcile_loop(interval: int = 30):
+                        # Reconcile state with missing-counts to avoid flapping unsubscriptions
+                        from src.market_data.reconcile import ReconcileState, reconcile_step
+                        state = ReconcileState()
                         while True:
                             try:
-                                await _reconcile_once()
+                                # Build desired_refcount from open trades
+                                pm = get_position_manager()
+                                active = pm.get_active_trades_summary()
+                                desired_refcount = {}
+                                for t in active:
+                                    tk = t.get("token_id")
+                                    if not tk:
+                                        continue
+                                    desired_refcount[tk] = desired_refcount.get(tk, 0) + 1
+
+                                # compute actions
+                                try:
+                                    res = reconcile_step(_market_data_adapter, desired_refcount, state, missing_threshold=3)
+                                except Exception:
+                                    logger.exception("Reconcile step failed")
+                                    res = {"to_subscribe": set(), "to_unsubscribe": set()}
+
+                                # perform subscribe/unsubscribe
+                                for tk in res.get("to_subscribe", set()):
+                                    try:
+                                        await _market_data_adapter.subscribe(tk)
+                                        logger.info("Reconcile: requested subscribe %s", str(tk)[:24])
+                                    except Exception:
+                                        logger.exception("Reconcile: subscribe failed for %s", tk)
+
+                                for tk in res.get("to_unsubscribe", set()):
+                                    try:
+                                        await _market_data_adapter.unsubscribe(tk)
+                                        logger.info("Reconcile: requested unsubscribe %s", str(tk)[:24])
+                                        state.missing_count.pop(tk, None)
+                                    except Exception:
+                                        logger.exception("Reconcile: unsubscribe failed for %s", tk)
+
                                 # heartbeat log
                                 try:
                                     from src.market_data.telemetry import telemetry as _tele
@@ -288,11 +323,11 @@ async def startup_event():
                                     last_age = None
                                     dropped = 0
                                 subs_count = len(getattr(_market_data_adapter, "_subs", set())) if _market_data_adapter else 0
-                                logger.info(f\"MarketData reconcile heartbeat: active_subscriptions={subs_count}, last_msg_age_s={last_age}, ws_connected={bool(getattr(_market_data_adapter, '_started', False))}, dropped_total={dropped}\")
+                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(_market_data_adapter, '_started', False))), str(dropped))
                             except asyncio.CancelledError:
                                 break
                             except Exception:
-                                logger.exception(\"Reconcile loop iteration failed\")
+                                logger.exception("Reconcile loop iteration failed")
                             await asyncio.sleep(interval)
                     rt = asyncio.create_task(reconcile_loop(interval=getattr(settings, 'MARKET_DATA_RECONCILE_SECONDS', 30)))
                     _market_data_tasks.append(rt)
