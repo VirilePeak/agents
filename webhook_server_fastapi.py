@@ -346,9 +346,9 @@ async def startup_event():
                             await asyncio.sleep(interval)
                     rt = asyncio.create_task(reconcile_loop(interval=getattr(settings, 'MARKET_DATA_RECONCILE_SECONDS', 30)))
                     _market_data_tasks.append(rt)
-                    logger.info(\"MarketData reconcile loop scheduled\")
+                    logger.info("MarketData reconcile loop scheduled")
                 except Exception:
-                    logger.exception(\"Failed to schedule market-data reconcile loop\")
+                    logger.exception("Failed to schedule market-data reconcile loop")
             except Exception:
                 logger.exception("Failed to start MarketDataAdapter")
         else:
