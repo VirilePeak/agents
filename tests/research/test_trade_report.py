@@ -34,7 +34,7 @@ def test_parse_and_metrics(tmp_path):
     assert real_metrics["wins"] == sum(1 for t in real_trades if t.get("pnl") and t["pnl"] > 0)
 
     # rolling last_n
-    sorted_closed, info = tr.filter_recent(all_trades, last_n=5, since_hours=None, tz=tr.ZoneInfo("UTC"))
+    sorted_closed, info = tr.filter_recent(all_trades, last_n=5, since_hours=None, tz=tr.timezone.utc)
     assert len(info["last_n"]) == 5
 
     # markdown generation contains sections
