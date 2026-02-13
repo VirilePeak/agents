@@ -4074,7 +4074,6 @@ def webhook(payload: WebhookPayload):
         # Best-effort: subscribe to market data for this token as soon as a signal is accepted
         try:
             if chosen_token:
-                global _market_data_adapter
                 if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
                     try:
                         loop = asyncio.get_running_loop()
@@ -4571,7 +4570,6 @@ def webhook(payload: WebhookPayload):
                         # Subscribe adapter to token for realtime updates (best-effort).
                         # Use non-blocking scheduling because this code path may be sync.
                         try:
-                            global _market_data_adapter
                             if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
                                 try:
                                     loop = asyncio.get_running_loop()
