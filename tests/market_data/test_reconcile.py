@@ -1,5 +1,8 @@
+import sys
 import asyncio
 import types
+# ensure local src/ is importable in CI / test runs
+sys.path.append(".")
 from src.market_data.reconcile import ReconcileState, reconcile_step
 
 
