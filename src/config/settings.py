@@ -111,7 +111,7 @@ class Settings:
     MARKET_DATA_CACHE_STALE_SECONDS: float = 30.0
     MARKET_DATA_BUS_QUEUE_SIZE: int = 1000
     # RTDS (optional) - real-time data stream provider settings
-    MARKET_DATA_RTDS_ENABLED: bool = False
+    MARKET_DATA_RTDS_ENABLED: bool = True
     MARKET_DATA_RTDS_URL: str = "wss://ws-live-data.polymarket.com"
     # Entry / Risk Gates (conservative defaults)
     MAX_ENTRY_SPREAD: float = 0.05
