@@ -56,7 +56,9 @@ class MarketDataAdapter:
         if token_id in self._subs:
             return
         self._subs.add(token_id)
+        logger.info("MarketDataAdapter: subscribing to token %s", token_id)
         await self.provider.subscribe([token_id])
+        logger.info("MarketDataAdapter: subscribed to token %s (provider notified)", token_id)
         # RTDS provider uses topic-based subscriptions; forward token if present
         if self.rtds_provider:
             try:
