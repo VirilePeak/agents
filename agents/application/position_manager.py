@@ -278,9 +278,9 @@ class PositionManager:
                         target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(token_id))
                     ).start()
                 logger.info("PositionManager: scheduled MarketDataAdapter.subscribe for token %s", token_id)
-        except Exception:
+        except Exception as e:
             # Non-fatal — continue without subscription
-            logger.debug("PositionManager: MarketDataAdapter subscribe not available or failed to schedule")
+            logger.info("PositionManager: MarketDataAdapter subscribe not available or failed to schedule: %s", e)
         
         return trade
     
