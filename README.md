@@ -1,3 +1,16 @@
+Debug endpoints
+---------------
+
+To enable debug/admin endpoints (only for trusted networks), set:
+
+```
+DEBUG_ENDPOINTS_ENABLED=1
+# optional:
+DEBUG_ENDPOINTS_TOKEN=your-secret-token
+```
+
+The subscriptions view requires the `X-Debug-Token` header when `DEBUG_ENDPOINTS_TOKEN` is set.
+
 <!-- PROJECT SHIELDS -->
 [![Contributors][contributors-shield]][contributors-url]
 [![Forks][forks-shield]][forks-url]

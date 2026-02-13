@@ -118,6 +118,7 @@ class Settings:
     # How many consecutive reconcile cycles a token must be missing before unsubscribe
     MARKET_DATA_RECONCILE_MISSING_THRESHOLD: int = 3
     # Debug / admin endpoints toggle and simple token auth
+    # Debug endpoints should be exposed only behind VPN/ingress auth; token is a secondary guard.
     DEBUG_ENDPOINTS_ENABLED: bool = False
     DEBUG_ENDPOINTS_TOKEN: str | None = None
     # Entry / Risk Gates (conservative defaults)
