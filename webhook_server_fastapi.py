@@ -266,7 +266,6 @@ async def startup_event():
     logger.info("=" * 60)
     
     # Start background cleanup task for timeout trades
-    import asyncio
     async def cleanup_task():
         pm = get_position_manager()
         while True:
