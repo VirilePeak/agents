@@ -4071,6 +4071,21 @@ def webhook(payload: WebhookPayload):
         else:
             action = "NO_ACTION"
 
+        # Best-effort: subscribe to market data for this token as soon as a signal is accepted
+        try:
+            if chosen_token:
+                global _market_data_adapter
+                if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(_market_data_adapter.subscribe(chosen_token))
+                    except RuntimeError:
+                        import threading
+                        threading.Thread(target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(chosen_token))).start()
+                    logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled on signal for token {str(chosen_token)[:18]}...")
+        except Exception:
+            logger.exception(f"[{request_id}] Failed to schedule MarketDataAdapter.subscribe for token {chosen_token}")
+
         logger.info(f"[{request_id}] TOKEN DEBUG: action={action} up_token={str(up_token)[:18]} down_token={str(down_token)[:18]} chosen_token={str(chosen_token)[:18]}")
 
         # Risk Management Checks
