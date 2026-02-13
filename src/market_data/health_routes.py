@@ -37,3 +37,29 @@ def register(app: FastAPI) -> None:
             "notes": notes,
         }
 
+    @app.post("/market-data/admin/subscribe")
+    async def market_data_admin_subscribe(body: dict) -> Any:
+        """
+        Admin helper to request a best-effort subscription for a token.
+        Body: {"token": "<token_id>"}
+        """
+        token = body.get("token")
+        if not token:
+            return {"ok": False, "error": "token required"}
+        try:
+            # import lazily to avoid circular import at module load
+            from webhook_server_fastapi import _market_data_adapter  # type: ignore
+            if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
+                try:
+                    import asyncio
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_market_data_adapter.subscribe(token))
+                except RuntimeError:
+                    import threading
+                    threading.Thread(target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(token))).start()
+                return {"ok": True, "scheduled": True, "token": token}
+            else:
+                return {"ok": False, "scheduled": False, "reason": "adapter_unavailable"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
