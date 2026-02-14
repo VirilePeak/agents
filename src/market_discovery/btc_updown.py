@@ -17,12 +17,42 @@ def _slug_for_window(timeframe_minutes: int, now_ts: float) -> str:
     return f"btc-updown-{timeframe_minutes}m-{window_start}"
 
 
-def find_current_btc_updown_market(timeframe_minutes: int, now_ts: float, http_client: Optional[httpx.Client] = None) -> Dict[str, Any]:
+def derive_btc_updown_slug_from_signal_id(signal_id: str, timeframe_minutes: int) -> Optional[str]:
+    """
+    Extract a 13-digit epoch-ms from signal_id and derive slug like:
+    btc-updown-{tf}m-{window_start_s}
+    Returns None if no timestamp found.
+    """
+    import re
+    m = re.search(r"-(\d{13})-", signal_id or "")
+    if not m:
+        m = re.search(r"(\d{13})", signal_id or "")
+        if not m:
+            return None
+    signal_ms = int(m.group(1))
+    tf_ms = timeframe_minutes * 60_000
+    window_start_ms = (signal_ms // tf_ms) * tf_ms
+    window_start_s = window_start_ms // 1000
+    return f"btc-updown-{timeframe_minutes}m-{window_start_s}"
+
+
+def find_current_btc_updown_market(timeframe_minutes: int, now_ts: float, http_client: Optional[httpx.Client] = None, signal_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Return market info for current btc-updown window or raise NoCurrentMarket.
     """
     client = http_client or httpx.Client(timeout=10)
-    slug = _slug_for_window(timeframe_minutes, now_ts)
+    # If signal_id provided, try derive slug exactly matching the signal window first
+    if signal_id:
+        try:
+            derived = derive_btc_updown_slug_from_signal_id(signal_id, timeframe_minutes)
+            if derived:
+                slug = derived
+            else:
+                slug = _slug_for_window(timeframe_minutes, now_ts)
+        except Exception:
+            slug = _slug_for_window(timeframe_minutes, now_ts)
+    else:
+        slug = _slug_for_window(timeframe_minutes, now_ts)
     base = "https://gamma-api.polymarket.com"
     # Primary: direct slug lookup
     try:
