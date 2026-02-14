@@ -3992,8 +3992,10 @@ def webhook(payload: WebhookPayload):
                                     logger.info(f"[{request_id}] confirmation_pending: key={conf_key} delay={getattr(settings, 'CONFIRMATION_DELAY_SECONDS', 60)}s ttl={getattr(settings, 'CONFIRMATION_TTL_SECONDS', 180)}s")
                                     # Best-effort: derive market slug and subscribe to tokens while confirmation pending
                                     try:
-                                        from src.market_discovery.btc_updown import derive_btc_updown_slug_from_signal_id
-                                        slug = derive_btc_updown_slug_from_signal_id(sig_id, getattr(settings, "BTC_UPDOWN_TIMEFRAME_MINUTES", 5))
+                                        from src.market_discovery.btc_updown import derive_btc_updown_slug_from_signal_id, derive_btc_updown_slug_from_payload
+                                        payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+                                        tf = getattr(settings, "BTC_UPDOWN_TIMEFRAME_MINUTES", 5)
+                                        slug = derive_btc_updown_slug_from_payload(payload_dict, tf) or derive_btc_updown_slug_from_signal_id(sig_id, tf)
                                         if not slug:
                                             # fallback to computed slot-based slug if signal_id not parseable
                                             now_ts = int(time.time())

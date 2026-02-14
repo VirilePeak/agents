@@ -36,6 +36,65 @@ def derive_btc_updown_slug_from_signal_id(signal_id: str, timeframe_minutes: int
     return f"btc-updown-{timeframe_minutes}m-{window_start_s}"
 
 
+def derive_btc_updown_slug_from_payload(payload: dict, timeframe_minutes: int) -> Optional[str]:
+    """
+    Derive a canonical btc-updown slug from a webhook payload.
+    Prefer explicit window_end_ms / windowEndMs / window_end fields, or barTime.
+    Normalizes window_end_ms to the nearest timeframe boundary (round-to-nearest).
+    Returns slug or None.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    def _get_int_field(keys):
+        for k in keys:
+            v = payload.get(k)
+            if v is None:
+                continue
+            try:
+                return int(v)
+            except Exception:
+                try:
+                    return int(float(v))
+                except Exception:
+                    continue
+        return None
+
+    # candidate fields that may provide millis epoch for window end
+    window_ms = _get_int_field(["window_end_ms", "window_end", "windowEndMs", "windowEnd", "window_end_ms"])
+    if window_ms is None:
+        # try barTime as window end minus timeframe (bar time is typically window start)
+        bar_time = _get_int_field(["barTime", "bar_time", "barTimestamp"])
+        if bar_time is not None:
+            window_ms = bar_time + timeframe_minutes * 60_000
+
+    # as fallback, try to parse from signal_id if present
+    if window_ms is None and isinstance(payload.get("signal_id"), str):
+        import re
+        m = re.search(r"-(\d{13})-", payload.get("signal_id") or "")
+        if not m:
+            m = re.search(r"(\d{13})", payload.get("signal_id") or "")
+        if m:
+            try:
+                window_ms = int(m.group(1))
+            except Exception:
+                window_ms = None
+
+    if window_ms is None:
+        return None
+
+    # normalize to nearest timeframe boundary (round-to-nearest)
+    tf_ms = timeframe_minutes * 60_000
+    rem = window_ms % tf_ms
+    if rem >= (tf_ms / 2):
+        window_start_ms = window_ms + (tf_ms - rem)
+    else:
+        window_start_ms = window_ms - rem
+
+    window_start_s = int(window_start_ms // 1000)
+    return f"btc-updown-{timeframe_minutes}m-{window_start_s}"
+
+
 def find_current_btc_updown_market(timeframe_minutes: int, now_ts: float, http_client: Optional[httpx.Client] = None, signal_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Return market info for current btc-updown window or raise NoCurrentMarket.
