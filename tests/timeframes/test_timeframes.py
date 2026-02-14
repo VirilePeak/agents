@@ -1,4 +1,6 @@
 from datetime import datetime, timezone, timedelta
+import sys
+sys.path.append(".")
 from src.timeframes import floor_time, window_bounds, seconds_from_start, seconds_to_end
 
 
