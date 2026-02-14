@@ -28,7 +28,8 @@ def test_dry_run_discovery(monkeypatch):
     # monkeypatch discovery to return fake market
     def fake_find(tf, now, http_client, signal_id=None):
         return {"market": {"slug": "btc-updown-5m-1000", "id": "m1", "clobTokenIds": ["A","B"]}, "clobTokenIds": ["A","B"]}
-    monkeypatch.setattr("src.market_discovery.btc_updown.find_current_btc_updown_market", fake_find)
+    # patch the symbol used by the endpoint module directly
+    monkeypatch.setattr("src.market_data.health_routes.find_current_btc_updown_market", fake_find)
 
     with TestClient(app) as client:
         r = client.post("/market-data/admin/discover-subscribe", headers={"X-Debug-Token": "tok"}, json={"timeframe_minutes":5, "dry_run": True, "wait_seconds": 0})
@@ -50,7 +51,8 @@ def test_subscribe_invoked(monkeypatch):
     # fake discovery
     def fake_find(tf, now, http_client, signal_id=None):
         return {"market": {"slug": "btc-updown-5m-1000", "id": "m1", "clobTokenIds": ["T1","T2"]}, "clobTokenIds": ["T1","T2"]}
-    monkeypatch.setattr("src.market_discovery.btc_updown.find_current_btc_updown_market", fake_find)
+    # patch the symbol used by the endpoint module directly
+    monkeypatch.setattr("src.market_data.health_routes.find_current_btc_updown_market", fake_find)
 
     # fake adapter
     class FakeAdapter:
