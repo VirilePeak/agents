@@ -55,9 +55,12 @@ class PolymarketRTDSProvider(AbstractMarketDataProvider):
         for t in token_ids:
             if t not in self._subs:
                 self._subs.append(t)
-        # send subscribe if connected
-        if self._ws and self._ws.open:
-            await self._send_subscribe(self._subs)
+        # send subscribe if connected (best-effort, compatible with multiple websockets versions)
+        try:
+            if self._ws and _ws_is_open(self._ws):
+                await self._send_subscribe(self._subs)
+        except Exception:
+            logger.debug("RTDS subscribe skipped (ws not open or send failed)")
 
     async def unsubscribe(self, token_ids: List[str]) -> None:
         for t in token_ids:
@@ -65,8 +68,11 @@ class PolymarketRTDSProvider(AbstractMarketDataProvider):
                 self._subs.remove(t)
             except ValueError:
                 pass
-        if self._ws and self._ws.open:
-            await self._send_subscribe(self._subs)
+        try:
+            if self._ws and _ws_is_open(self._ws):
+                await self._send_subscribe(self._subs)
+        except Exception:
+            logger.debug("RTDS unsubscribe skipped (ws not open or send failed)")
 
     async def _send_subscribe(self, subs: List[str]) -> None:
         if not subs:
@@ -116,6 +122,36 @@ class PolymarketRTDSProvider(AbstractMarketDataProvider):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
         logger.info("PolymarketRTDSProvider stopped")
+
+
+def _ws_is_open(ws: object) -> bool:
+    """
+    Compatibility helper for websockets client connection open state.
+    Works across versions where .open/.closed or .state exist.
+    """
+    if ws is None:
+        return False
+    # EAFP: try legacy .open first
+    try:
+        return bool(getattr(ws, "open"))
+    except Exception:
+        pass
+    # try .closed attribute (return inverse)
+    try:
+        closed = getattr(ws, "closed", None)
+        if closed is not None:
+            return not bool(closed)
+    except Exception:
+        pass
+    # try state.name == "OPEN"
+    try:
+        state = getattr(ws, "state", None)
+        if state is not None:
+            name = getattr(state, "name", None)
+            return name == "OPEN"
+    except Exception:
+        pass
+    return False
 
     @staticmethod
     def parse_raw_message(msg: dict) -> List[MarketEvent]:

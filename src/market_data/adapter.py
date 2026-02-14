@@ -75,12 +75,25 @@ class MarketDataAdapter:
         if token_id not in self._subs:
             return
         self._subs.discard(token_id)
-        await self.provider.unsubscribe([token_id])
+        try:
+            await self.provider.unsubscribe([token_id])
+        except Exception:
+            logger.warning("Provider unsubscribe failed for %s (best-effort)", token_id)
+            try:
+                from .telemetry import telemetry
+                telemetry.incr("market_data_unsubscribe_failed_total", 1)
+            except Exception:
+                pass
         if self.rtds_provider:
             try:
                 await self.rtds_provider.unsubscribe([token_id])
             except Exception:
-                logger.exception("RTDS unsubscribe failed")
+                logger.warning("RTDS unsubscribe failed for %s (best-effort)", token_id)
+                try:
+                    from .telemetry import telemetry
+                    telemetry.incr("market_data_unsubscribe_failed_total", 1)
+                except Exception:
+                    pass
         try:
             from .telemetry import telemetry
             telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
