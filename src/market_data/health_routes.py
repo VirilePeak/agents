@@ -238,6 +238,22 @@ def register(app: FastAPI) -> None:
                 subscriptions = {"ok": False, "error": "could_not_read_adapter_state"}
 
             metrics = snap_after
+            # attempt to surface unknown sample from provider if available
+            unknown_sample = None
+            try:
+                provider_unknown = None
+                if adapter2:
+                    provider_unknown = getattr(adapter2, "get_unknown_sample", None)
+                    if provider_unknown:
+                        unknown_sample = provider_unknown()
+                if unknown_sample is None:
+                    # fallback to module-level adapter
+                    import webhook_server_fastapi as ws  # type: ignore
+                    adapter_glob = getattr(ws, "_market_data_adapter", None)
+                    if adapter_glob and getattr(adapter_glob, "get_unknown_sample", None):
+                        unknown_sample = adapter_glob.get_unknown_sample()
+            except Exception:
+                unknown_sample = None
 
             traffic_check = {
                 "raw_messages_before": raw_before,
@@ -258,6 +274,7 @@ def register(app: FastAPI) -> None:
                 "traffic_check": traffic_check,
                 "metrics": metrics,
                 "subscriptions": subscriptions,
+                "unknown_sample": unknown_sample,
                 "notes": notes,
             }
         except Exception as e:

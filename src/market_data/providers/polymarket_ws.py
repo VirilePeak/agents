@@ -25,6 +25,8 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         self._ws = None
         # whether we've logged an unknown sample for current connection
         self._unknown_sample_logged: bool = False
+        # store one unknown sample per-connection for debugging
+        self._unknown_sample: dict | None = None
         self._ping_interval = ping_interval
         self._pong_timeout = pong_timeout
 
@@ -145,46 +147,78 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         except Exception as e:
             logger.debug("unsubscribe_op send failed: %s", e)
 
-    async def _handle_dict_msg(self, m: dict) -> None:
-        """
-        Normalize and dispatch a single message dict (book / price_change / trade).
-        Extracted into a method for clarity and testability.
-        """
+    def _safe_emit(self, ev: MarketEvent) -> bool:
+        """Call on_event safely; return True if handler executed without raising."""
+        if not self.on_event:
+            return False
         try:
-            # count every parsed dict for visibility
+            self.on_event(ev)
             try:
-                telemetry.incr("market_data_parsed_dict_total", 1)
+                telemetry.incr("market_data_events_emitted_total", 1)
             except Exception:
                 pass
-            etype = m.get("event_type") or m.get("type") or m.get("topic")
-            token = m.get("asset_id") or m.get("assetId") or m.get("market") or m.get("asset")
-            # if unknown etype, increment counter and log a sample once per connection
-            if etype not in ("book", "price_change", "last_trade_price"):
-                try:
-                    telemetry.incr("market_data_unknown_etype_total", 1)
-                except Exception:
-                    pass
-                try:
-                    if not getattr(self, "_unknown_sample_logged", False):
-                        keys = list(m.keys())[:20]
-                        sample = json.dumps(m, default=str)[:400]
-                        logger.info("Unknown WS etype sample: etype=%s keys=%s token_guess=%s sample=%s", str(etype), keys, str(token)[:24], sample)
-                        self._unknown_sample_logged = True
-                except Exception:
-                    pass
-            # update last-msg timestamp for telemetry (use wall clock)
-            try:
-                telemetry.set_last_msg_ts(time.time())
-            except Exception:
-                pass
+            return True
+        except Exception:
+            logger.exception("on_event handler failed")
+            return False
 
-            if etype == "book":
-                bids = m.get("bids") or m.get("buys") or []
-                asks = m.get("asks") or m.get("sells") or []
+    def get_unknown_sample(self) -> dict | None:
+        """Return a captured unknown sample for debugging (or None)."""
+        return self._unknown_sample
+
+    async def _handle_dict_msg(self, m: dict) -> None:
+        """Normalize and dispatch a single message dict (book / price_change / trade / best_bid_ask)."""
+        # count every parsed dict for visibility
+        try:
+            telemetry.incr("market_data_parsed_dict_total", 1)
+        except Exception:
+            pass
+
+        # support wrapped payloads: many messages use {"data": {...}} or {"payload": {...}}
+        payload = m
+        if isinstance(m.get("data"), dict):
+            payload = m["data"]
+        elif isinstance(m.get("payload"), dict):
+            payload = m["payload"]
+
+        etype = (payload.get("event_type") if isinstance(payload, dict) else None) or \
+                (payload.get("eventType") if isinstance(payload, dict) else None) or \
+                (payload.get("type") if isinstance(payload, dict) else None) or \
+                (payload.get("topic") if isinstance(payload, dict) else None) or \
+                (payload.get("event") if isinstance(payload, dict) else None)
+        token = (payload.get("asset_id") if isinstance(payload, dict) else None) or \
+                (payload.get("assetId") if isinstance(payload, dict) else None) or \
+                m.get("asset_id") or m.get("assetId") or m.get("market") or m.get("asset")
+
+        # update last-msg timestamp for telemetry (use wall clock)
+        try:
+            telemetry.set_last_msg_ts(time.time())
+        except Exception:
+            pass
+
+        # Heuristics: treat payloads with bids/asks as book even if etype missing
+        if not isinstance(payload, dict):
+            # payload is not a dict -- treat as unknown
+            detected_type = None
+        else:
+            detected_type = etype
+            if detected_type is None:
+                if ("bids" in payload and "asks" in payload):
+                    detected_type = "book"
+                elif ("price_changes" in payload) or ("priceChanges" in payload):
+                    detected_type = "price_change"
+                elif ("last_trade_price" in payload) or ("lastTradePrice" in payload):
+                    detected_type = "last_trade_price"
+
+        # Dispatch known event types
+        if detected_type == "book":
+            try:
+                bids = payload.get("bids") or payload.get("buys") or []
+                asks = payload.get("asks") or payload.get("sells") or []
                 raw_ob = {"bids": bids, "asks": asks}
-                snapshot = OrderBookSnapshot.from_raw(str(m.get("asset_id") or token), raw_ob, source="ws")
+                snapshot = OrderBookSnapshot.from_raw(str(payload.get("asset_id") or token), raw_ob, source="ws")
                 ev = MarketEvent(
-                    ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                    ts=float(payload.get("timestamp") or m.get("timestamp") or 0) / 1000.0 if (payload.get("timestamp") or m.get("timestamp")) else float(asyncio.get_event_loop().time()),
                     type="book",
                     token_id=snapshot.token_id,
                     best_bid=snapshot.best_bid,
@@ -192,22 +226,22 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                     spread_pct=snapshot.spread_pct,
                     data=m,
                 )
-                if self.on_event:
-                    try:
-                        self.on_event(ev)
-                    except Exception:
-                        logger.exception("on_event handler failed")
                 try:
                     telemetry.incr("market_data_messages_total", 1)
                     telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
                 except Exception:
                     pass
-            elif etype == "price_change":
-                changes = m.get("price_changes") or m.get("priceChanges") or []
+                self._safe_emit(ev)
+            except Exception:
+                logger.exception("failed to process book message")
+
+        elif detected_type == "price_change":
+            try:
+                changes = payload.get("price_changes") or payload.get("priceChanges") or []
                 for pc in changes:
                     token_id = str(pc.get("asset_id") or pc.get("assetId") or token)
                     ev = MarketEvent(
-                        ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                        ts=float(payload.get("timestamp") or m.get("timestamp") or 0) / 1000.0 if (payload.get("timestamp") or m.get("timestamp")) else float(asyncio.get_event_loop().time()),
                         type="price_change",
                         token_id=token_id,
                         best_bid=pc.get("best_bid"),
@@ -215,20 +249,20 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                         spread_pct=None,
                         data=pc,
                     )
-                    if self.on_event:
-                        try:
-                            self.on_event(ev)
-                        except Exception:
-                            logger.exception("on_event handler failed")
                     try:
                         telemetry.incr("market_data_messages_total", 1)
                         telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
                     except Exception:
                         pass
-            elif etype == "last_trade_price":
-                token_id = str(m.get("asset_id") or token)
+                    self._safe_emit(ev)
+            except Exception:
+                logger.exception("failed to process price_change message")
+
+        elif detected_type in ("last_trade_price", "trade", "lastTradePrice"):
+            try:
+                token_id = str(payload.get("asset_id") or payload.get("assetId") or token)
                 ev = MarketEvent(
-                    ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                    ts=float(payload.get("timestamp") or m.get("timestamp") or 0) / 1000.0 if (payload.get("timestamp") or m.get("timestamp")) else float(asyncio.get_event_loop().time()),
                     type="trade",
                     token_id=token_id,
                     best_bid=None,
@@ -236,77 +270,36 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                     spread_pct=None,
                     data=m,
                 )
-                if self.on_event:
-                    try:
-                        self.on_event(ev)
-                    except Exception:
-                        logger.exception("on_event handler failed")
-                # count this recognized market event regardless of on_event presence
                 try:
                     telemetry.incr("market_data_messages_total", 1)
                     telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
                 except Exception:
                     pass
-                # if on_event emitted, record emitted counter
-                if self.on_event:
-                    try:
-                        telemetry.incr("market_data_events_emitted_total", 1)
-                    except Exception:
-                        pass
-            elif etype == "best_bid_ask":
-                # custom best_bid_ask enriched payload (custom_feature_enabled)
-                # robust field extraction
-                try:
-                    best_bid = m.get("best_bid") or m.get("bestBid") or m.get("best_bid_price") or m.get("bid")
-                    best_ask = m.get("best_ask") or m.get("bestAsk") or m.get("best_ask_price") or m.get("ask")
-                    # try numeric conversion
-                    try:
-                        best_bid_f = float(best_bid) if best_bid is not None else None
-                    except Exception:
-                        best_bid_f = None
-                    try:
-                        best_ask_f = float(best_ask) if best_ask is not None else None
-                    except Exception:
-                        best_ask_f = None
-                    spread_pct = m.get("spread") or m.get("spread_pct") or None
-                    if spread_pct is None and best_bid_f is not None and best_ask_f is not None:
-                        try:
-                            spread_pct = float(best_ask_f) - float(best_bid_f)
-                        except Exception:
-                            spread_pct = None
-                    token_id = str(m.get("asset_id") or token)
-                    ev = MarketEvent(
-                        ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
-                        type="best_bid_ask",
-                        token_id=token_id,
-                        best_bid=best_bid_f,
-                        best_ask=best_ask_f,
-                        spread_pct=spread_pct,
-                        data=m,
-                    )
-                    # count recognized event
-                    try:
-                        telemetry.incr("market_data_messages_total", 1)
-                        telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
-                    except Exception:
-                        pass
-                    emitted = False
-                    if self.on_event:
-                        try:
-                            self.on_event(ev)
-                            emitted = True
-                        except Exception:
-                            logger.exception("on_event handler failed")
-                    if emitted:
-                        try:
-                            telemetry.incr("market_data_events_emitted_total", 1)
-                        except Exception:
-                            pass
-            else:
-                # ignore other types
-                return
-        except Exception:
-            logger.exception("processing single ws message failed")
+                self._safe_emit(ev)
+            except Exception:
+                logger.exception("failed to process trade message")
+
+        else:
+            # unknown event type: sample once per connection and increment counter
+            try:
+                telemetry.incr("market_data_unknown_etype_total", 1)
+            except Exception:
+                pass
+            try:
+                if not getattr(self, "_unknown_sample_logged", False):
+                    self._unknown_sample_logged = True
+                    payload_keys = sorted(list(payload.keys()))[:40] if isinstance(payload, dict) else [str(type(payload))]
+                    self._unknown_sample = {
+                        "keys": sorted(list(m.keys()))[:40],
+                        "etype_guess": etype,
+                        "payload_keys": payload_keys,
+                        "trunc": (json.dumps(m, default=str)[:800] if isinstance(m, (dict, list)) else str(m))[:800],
+                    }
+                    logger.warning("WS unknown message sample: etype=%s keys=%s payload_keys=%s trunc=%s",
+                                   etype, self._unknown_sample["keys"], self._unknown_sample["payload_keys"], self._unknown_sample["trunc"])
+            except Exception:
+                pass
+            return
 
     async def _run_loop(self) -> None:
         backoff = 1.0
@@ -318,6 +311,7 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                     # reset per-connection diagnostics
                     try:
                         self._unknown_sample_logged = False
+                        self._unknown_sample = None
                     except Exception:
                         pass
                     telemetry.set_gauge("market_data_ws_connected", 1.0)
