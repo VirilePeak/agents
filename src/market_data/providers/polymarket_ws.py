@@ -49,15 +49,51 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
     async def subscribe(self, token_ids: List[str]) -> None:
         for t in token_ids:
             self._subs.add(t)
-        # If websocket connected, send subscription
-        if self._ws and self._ws.open:
-            await self._send_subscribe(list(token_ids))
+        # If websocket connected, send subscription (safe check to avoid AttributeError)
+        try:
+            ws = self._ws
+            connected = False
+            if ws is not None:
+                # Prefer explicit closed flag (works for multiple libs); fall back to library-specific attrs
+                if hasattr(ws, "closed"):
+                    connected = not bool(getattr(ws, "closed"))
+                elif hasattr(ws, "state"):
+                    try:
+                        connected = getattr(ws, "state").name == "OPEN"
+                    except Exception:
+                        connected = False
+                elif hasattr(ws, "open"):
+                    connected = bool(getattr(ws, "open"))
+            if connected:
+                await self._send_subscribe(list(token_ids))
+            else:
+                logger.debug("subscribe: websocket not connected, queued tokens (no send)")
+        except Exception:
+            # Never raise out of subscribe - queue tokens for later when WS connects
+            logger.exception("subscribe: unexpected error while attempting to send subscribe")
 
     async def unsubscribe(self, token_ids: List[str]) -> None:
         for t in token_ids:
             self._subs.discard(t)
-        if self._ws and self._ws.open:
-            await self._send_unsubscribe(list(token_ids))
+        try:
+            ws = self._ws
+            connected = False
+            if ws is not None:
+                if hasattr(ws, "closed"):
+                    connected = not bool(getattr(ws, "closed"))
+                elif hasattr(ws, "state"):
+                    try:
+                        connected = getattr(ws, "state").name == "OPEN"
+                    except Exception:
+                        connected = False
+                elif hasattr(ws, "open"):
+                    connected = bool(getattr(ws, "open"))
+            if connected:
+                await self._send_unsubscribe(list(token_ids))
+            else:
+                logger.debug("unsubscribe: websocket not connected, removal queued")
+        except Exception:
+            logger.exception("unsubscribe: unexpected error while attempting to send unsubscribe")
 
     async def _send_subscribe(self, token_ids: List[str]) -> None:
         if not token_ids:
