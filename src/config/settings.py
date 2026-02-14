@@ -128,6 +128,8 @@ class Settings:
     BTC_UPDOWN_ENTRY_DEADLINE_SECONDS: int = 60
     BTC_UPDOWN_MIN_TIME_TO_END_SECONDS: int = 30
     BTC_UPDOWN_AUTO_CLOSE_BUFFER_SECONDS: int = 15
+    # Feature flag: request best_bid_ask enrichment from provider if available
+    MARKET_DATA_CUSTOM_FEATURE_ENABLED: bool = True
     # Entry / Risk Gates (conservative defaults)
     MAX_ENTRY_SPREAD: float = 0.05
     HARD_REJECT_SPREAD: float = 0.30
@@ -256,6 +258,7 @@ def _load_from_env(settings: Settings) -> None:
     set_if("MAX_ENTRY_SPREAD", lambda v: parse_float(v, settings.MAX_ENTRY_SPREAD))
     set_if("DEBUG_ENDPOINTS_ENABLED", lambda v: parse_bool(v, settings.DEBUG_ENDPOINTS_ENABLED))
     set_if("DEBUG_ENDPOINTS_TOKEN", str)
+    set_if("MARKET_DATA_CUSTOM_FEATURE_ENABLED", lambda v: parse_bool(v, settings.MARKET_DATA_CUSTOM_FEATURE_ENABLED))
     set_if("HARD_REJECT_SPREAD", lambda v: parse_float(v, settings.HARD_REJECT_SPREAD))
     set_if("REQUIRE_MARKET_QUALITY_HEALTHY", lambda v: parse_bool(v, settings.REQUIRE_MARKET_QUALITY_HEALTHY))
     set_if("DISABLE_CONFIDENCE_GE", lambda v: parse_int(v, settings.DISABLE_CONFIDENCE_GE))

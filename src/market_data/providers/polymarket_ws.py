@@ -10,6 +10,7 @@ import time
 from ..schema import MarketEvent, OrderBookSnapshot
 from .base import AbstractMarketDataProvider
 from ..telemetry import telemetry
+from src.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,9 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         # legacy handshake (used on initial connect)
         if not token_ids:
             return
-        msg = {"assets_ids": token_ids, "type": "market"}
+        settings = get_settings()
+        custom = bool(getattr(settings, "MARKET_DATA_CUSTOM_FEATURE_ENABLED", True))
+        msg = {"assets_ids": token_ids, "type": "market", "custom_feature_enabled": custom}
         try:
             logger.debug("WS send handshake: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
@@ -113,7 +116,9 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         # operation-based subscribe (used after connect)
         if not token_ids:
             return
-        msg = {"assets_ids": token_ids, "operation": "subscribe"}
+        settings = get_settings()
+        custom = bool(getattr(settings, "MARKET_DATA_CUSTOM_FEATURE_ENABLED", True))
+        msg = {"assets_ids": token_ids, "operation": "subscribe", "custom_feature_enabled": custom}
         try:
             logger.debug("WS send subscribe_op: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
@@ -127,7 +132,9 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
     async def _send_unsubscribe(self, token_ids: List[str]) -> None:
         if not token_ids:
             return
-        msg = {"assets_ids": token_ids, "operation": "unsubscribe"}
+        settings = get_settings()
+        custom = bool(getattr(settings, "MARKET_DATA_CUSTOM_FEATURE_ENABLED", True))
+        msg = {"assets_ids": token_ids, "operation": "unsubscribe", "custom_feature_enabled": custom}
         try:
             logger.debug("WS send unsubscribe_op: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
@@ -234,11 +241,67 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                         self.on_event(ev)
                     except Exception:
                         logger.exception("on_event handler failed")
+                # count this recognized market event regardless of on_event presence
                 try:
                     telemetry.incr("market_data_messages_total", 1)
                     telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
                 except Exception:
                     pass
+                # if on_event emitted, record emitted counter
+                if self.on_event:
+                    try:
+                        telemetry.incr("market_data_events_emitted_total", 1)
+                    except Exception:
+                        pass
+            elif etype == "best_bid_ask":
+                # custom best_bid_ask enriched payload (custom_feature_enabled)
+                # robust field extraction
+                try:
+                    best_bid = m.get("best_bid") or m.get("bestBid") or m.get("best_bid_price") or m.get("bid")
+                    best_ask = m.get("best_ask") or m.get("bestAsk") or m.get("best_ask_price") or m.get("ask")
+                    # try numeric conversion
+                    try:
+                        best_bid_f = float(best_bid) if best_bid is not None else None
+                    except Exception:
+                        best_bid_f = None
+                    try:
+                        best_ask_f = float(best_ask) if best_ask is not None else None
+                    except Exception:
+                        best_ask_f = None
+                    spread_pct = m.get("spread") or m.get("spread_pct") or None
+                    if spread_pct is None and best_bid_f is not None and best_ask_f is not None:
+                        try:
+                            spread_pct = float(best_ask_f) - float(best_bid_f)
+                        except Exception:
+                            spread_pct = None
+                    token_id = str(m.get("asset_id") or token)
+                    ev = MarketEvent(
+                        ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                        type="best_bid_ask",
+                        token_id=token_id,
+                        best_bid=best_bid_f,
+                        best_ask=best_ask_f,
+                        spread_pct=spread_pct,
+                        data=m,
+                    )
+                    # count recognized event
+                    try:
+                        telemetry.incr("market_data_messages_total", 1)
+                        telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                    except Exception:
+                        pass
+                    emitted = False
+                    if self.on_event:
+                        try:
+                            self.on_event(ev)
+                            emitted = True
+                        except Exception:
+                            logger.exception("on_event handler failed")
+                    if emitted:
+                        try:
+                            telemetry.incr("market_data_events_emitted_total", 1)
+                        except Exception:
+                            pass
             else:
                 # ignore other types
                 return
