@@ -12,6 +12,8 @@ from statistics import mean, median
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import math
+import argparse
+from src.utils.ab_router import ab_bucket, ab_variant
 
 
 def load_closed_trades(paths: List[str]) -> List[Dict[str, Any]]:
@@ -186,17 +188,87 @@ def print_markdown_report(trades: List[Dict[str, Any]]):
     for seg in segs_sorted[:5]:
         print(f"- {seg[0]}: expectancy={seg[1]:.6f} (n={seg[2]})")
 
+def analyze_trades(trades: List[Dict[str, Any]], split_ab: bool = False, ab_key_priority: Optional[List[str]] = None) -> Dict[str, Any]:
+    if ab_key_priority is None:
+        ab_key_priority = ["token_id", "tokenId", "asset_id", "assetId", "market_id", "marketId", "signal_id", "signalId"]
+
+    out = {"summary": summary_stats(trades)}
+    if not split_ab:
+        return out
+
+    def pick_key(t: Dict[str, Any]) -> Optional[str]:
+        for k in ab_key_priority:
+            if k in t and t.get(k):
+                return str(t.get(k))
+        return None
+
+    groups = {"control": [], "variant": [], "unknown": []}
+    for t in trades:
+        key = pick_key(t)
+        if key is None:
+            groups["unknown"].append(t)
+            continue
+        if ab_bucket(key) == 1:
+            groups["variant"].append(t)
+        else:
+            groups["control"].append(t)
+
+    ab_summary = {k: summary_stats(groups[k]) for k in groups}
+    delta = {
+        "winrate_delta_pct": ab_summary["variant"]["winrate_pct"] - ab_summary["control"]["winrate_pct"],
+        "expectancy_delta": ab_summary["variant"]["expectancy"] - ab_summary["control"]["expectancy"],
+        "profit_factor_delta": ab_summary["variant"]["profit_factor"] - ab_summary["control"]["profit_factor"],
+    }
+    out["ab_split"] = {"groups": ab_summary, "delta": delta}
+    return out
+
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--split-ab", action="store_true", help="Enable A/B split report")
+    parser.add_argument("--ab-key-priority", type=str, default="token_id,market_id,signal_id", help="Comma-separated key priority for AB routing")
+    parser.add_argument("--out-json", type=str, default=None, help="Optional JSON output file")
+    args = parser.parse_args()
+
     settings_files = []
-    # primary
     p = Path("paper_trades.jsonl")
     if p.exists() and p.stat().st_size > 0:
         settings_files.append(str(p))
     else:
         settings_files.extend(sorted(glob.glob("paper_trades_legacy*.jsonl")))
     trades = load_closed_trades(settings_files)
+
+    if not args.split_ab:
+        print_markdown_report(trades)
+        if args.out_json:
+            with open(args.out_json, "w", encoding="utf-8") as fh:
+                json.dump({"summary": summary_stats(trades)}, fh, indent=2)
+        return
+
+    ab_keys = [k.strip() for k in args.ab_key_priority.split(",") if k.strip()]
+    res = analyze_trades(trades, split_ab=True, ab_key_priority=ab_keys)
+
     print_markdown_report(trades)
+    print("# A/B Split Summary\n")
+    for grp in ("control", "variant", "unknown"):
+        g = res["ab_split"]["groups"].get(grp, {})
+        print(f"## {grp.capitalize()}")
+        print(f"- count: {g.get('total', 0)}")
+        print(f"- wins: {g.get('wins',0)}, losses: {g.get('losses',0)}, breakeven: {g.get('breakeven',0)}")
+        print(f"- winrate: {g.get('winrate_pct',0.0):.2f}%")
+        print(f"- avg_pnl: {g.get('avg_pnl',0.0):.6f}")
+        print(f"- expectancy: {g.get('expectancy',0.0):.6f}")
+        print(f"- profit_factor: {g.get('profit_factor',0.0):.3f}\n")
+
+    print("## Delta (variant - control)")
+    d = res["ab_split"]["delta"]
+    print(f"- winrate delta (pct): {d.get('winrate_delta_pct',0.0):.2f}")
+    print(f"- expectancy delta: {d.get('expectancy_delta',0.0):.6f}")
+    print(f"- profit_factor delta: {d.get('profit_factor_delta',0.0):.3f}")
+
+    if args.out_json:
+        with open(args.out_json, "w", encoding="utf-8") as fh:
+            json.dump(res, fh, indent=2)
 
 
 if __name__ == "__main__":
