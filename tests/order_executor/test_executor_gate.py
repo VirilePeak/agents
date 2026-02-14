@@ -78,3 +78,75 @@ def test_executor_allows_and_calls_polymarket_on_ok_spread():
     assert res.get("order_id") == "order_123"
     assert pm.called
 
+
+def find_key_for_bucket(target: int) -> str:
+    from src.utils.ab_router import ab_bucket
+    i = 0
+    while True:
+        k = f"test-key-{i}"
+        if ab_bucket(k) == target:
+            return k
+        i += 1
+
+
+def test_variant_blocks_on_spread_but_control_allows(tmp_path):
+    settings = get_settings()
+    # ensure variant threshold is set
+    settings.MAX_SPREAD_PCT_VARIANT = 0.03
+    settings.ENTRY_FILTERS_AB_ENABLED = True
+    # ensure edge filter not active for this specific spread test
+    settings.MIN_EDGE_CENTS_VARIANT = None
+    # find keys
+    variant_key = find_key_for_bucket(1)
+    control_key = find_key_for_bucket(0)
+
+    pm = DummyPolymarket()
+    # wide spread book
+    book = FakeOrderBook(bids=[FakeLevel(0.49, 10)], asks=[FakeLevel(0.52, 10)], timestamp=time.time())
+    adapter = FakeAdapter(book=book)
+    from agents.application.risk_manager import RiskManager
+    tf = tmp_path / "paper.jsonl"
+    tf.write_text("{}\n")
+    settings.PAPER_LOG_PATH = str(tf)
+    rm = RiskManager(settings.INITIAL_EQUITY, settings.MAX_EXPOSURE_PCT, settings.BASE_RISK_PCT)
+
+    # variant should be blocked (spread ~ (0.52-0.49)/0.505 ≈ 0.059 > 0.03)
+    res_variant = place_entry_order_with_gate(polymarket=pm, token_id=variant_key, price=0.505, size=1.0, side="BUY", adapter=adapter, risk_manager=rm)
+    assert res_variant["allowed"] is False
+    assert res_variant["reason"] == "max_spread_pct"
+
+    # control should allow (filters not applied for control)
+    pm2 = DummyPolymarket()
+    res_control = place_entry_order_with_gate(polymarket=pm2, token_id=control_key, price=0.505, size=1.0, side="BUY", adapter=adapter, risk_manager=rm)
+    assert res_control["allowed"] is True
+    assert pm2.called
+
+
+def test_variant_blocks_on_edge_but_control_allows(tmp_path):
+    settings = get_settings()
+    settings.MIN_EDGE_CENTS_VARIANT = 0.02
+    settings.ENTRY_FILTERS_AB_ENABLED = True
+    variant_key = find_key_for_bucket(1)
+    control_key = find_key_for_bucket(0)
+
+    pm = DummyPolymarket()
+    # mid ~0.50; price very close to mid -> small edge
+    book = FakeOrderBook(bids=[FakeLevel(0.49, 10)], asks=[FakeLevel(0.51, 10)], timestamp=time.time())
+    adapter = FakeAdapter(book=book)
+    from agents.application.risk_manager import RiskManager
+    tf = tmp_path / "paper2.jsonl"
+    tf.write_text("{}\n")
+    settings.PAPER_LOG_PATH = str(tf)
+    rm = RiskManager(settings.INITIAL_EQUITY, settings.MAX_EXPOSURE_PCT, settings.BASE_RISK_PCT)
+
+    # price chosen very close to mid (edge 0.005) < 0.02 -> variant blocked
+    res_variant = place_entry_order_with_gate(polymarket=pm, token_id=variant_key, price=0.5005, size=1.0, side="BUY", adapter=adapter, risk_manager=rm)
+    assert res_variant["allowed"] is False
+    assert res_variant["reason"] == "min_edge"
+
+    # control should allow
+    pm2 = DummyPolymarket()
+    res_control = place_entry_order_with_gate(polymarket=pm2, token_id=control_key, price=0.5005, size=1.0, side="BUY", adapter=adapter, risk_manager=rm)
+    assert res_control["allowed"] is True
+    assert pm2.called
+

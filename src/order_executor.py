@@ -56,24 +56,37 @@ def place_entry_order_with_gate(
     filters_enabled = False
     try:
         if getattr(settings, "ENTRY_FILTERS_AB_ENABLED", False):
-            import hashlib
-            h = hashlib.sha256(str(token_id).encode()).digest()[0]
-            variant = h % 2
-            # variant 1 = filters enabled
-            filters_enabled = (variant == 1)
+            from src.utils.ab_router import ab_bucket, ab_variant
+            filters_enabled = (ab_bucket(token_id) == 1)
     except Exception:
         filters_enabled = False
 
+    def _select_entry_filters(settings, routing_key: Optional[str]):
+        # default = control behavior (may be None -> no filter)
+        max_spread = getattr(settings, "MAX_SPREAD_PCT", None)
+        min_edge = getattr(settings, "MIN_EDGE_CENTS", None)
+        max_entry = getattr(settings, "MAX_ENTRY_PRICE", None)
+        try:
+            if getattr(settings, "ENTRY_FILTERS_AB_ENABLED", False) and routing_key:
+                from src.utils.ab_router import ab_variant
+                if ab_variant(routing_key) == "variant":
+                    max_spread = getattr(settings, "MAX_SPREAD_PCT_VARIANT", max_spread)
+                    min_edge = getattr(settings, "MIN_EDGE_CENTS_VARIANT", min_edge)
+                    max_entry = getattr(settings, "MAX_ENTRY_PRICE_VARIANT", max_entry)
+        except Exception:
+            pass
+        return max_spread, min_edge, max_entry
+
     # If filters_enabled, apply simple entry filters using adapter/orderbook if available
     if filters_enabled:
-        # MAX_ENTRY_PRICE
+        # MAX_ENTRY_PRICE (per-AB thresholds)
         try:
-            max_price = getattr(settings, "MAX_ENTRY_PRICE", None)
-            if max_price is not None and price is not None:
-                if float(price) > float(max_price):
+            max_spread_sel, min_edge_sel, max_price_sel = _select_entry_filters(settings, token_id)
+            if max_price_sel is not None and price is not None:
+                if float(price) > float(max_price_sel):
                     telemetry.incr("market_data_blocked_max_entry_price_total", 1)
                     details["blocked_by"] = "max_entry_price"
-                    details["max_entry_price"] = max_price
+                    details["max_entry_price"] = max_price_sel
                     return {"allowed": False, "reason": "max_entry_price", "details": details}
         except Exception:
             pass
@@ -163,18 +176,23 @@ def place_entry_order_with_gate(
                     mid = None
                     if best_bid is not None and best_ask is not None:
                         mid = (best_bid + best_ask) / 2.0
-                    # MIN_EDGE_CENTS check (absolute difference)
-                    min_edge = getattr(settings, "MIN_EDGE_CENTS", None)
-                    if min_edge is not None and mid is not None and price is not None:
+                    # MIN_EDGE_CENTS check (absolute difference) and MAX_SPREAD_PCT (relative)
+                    try:
+                        # use AB-selected thresholds
+                        max_sp_sel, min_edge_sel, max_price_sel = _select_entry_filters(settings, token_id)
+                    except Exception:
+                        max_sp_sel, min_edge_sel, max_price_sel = getattr(settings, "MAX_SPREAD_PCT", None), getattr(settings, "MIN_EDGE_CENTS", None), getattr(settings, "MAX_ENTRY_PRICE", None)
+
+                    if min_edge_sel is not None and mid is not None and price is not None:
                         edge = abs(float(price) - float(mid))
-                        if edge < float(min_edge):
+                        if edge < float(min_edge_sel):
                             telemetry.incr("market_data_blocked_min_edge_total", 1)
                             details["blocked_by"] = "min_edge"
                             details["edge"] = edge
-                            details["min_edge"] = min_edge
+                            details["min_edge"] = min_edge_sel
                             return {"allowed": False, "reason": "min_edge", "details": details}
                     # MAX_SPREAD_PCT check
-                    max_sp = getattr(settings, "MAX_SPREAD_PCT", None)
+                    max_sp = max_sp_sel
                     if max_sp is not None and best_bid is not None and best_ask is not None and mid is not None and mid > 0:
                         spread_pct = (best_ask - best_bid) / mid
                         if spread_pct > float(max_sp):
