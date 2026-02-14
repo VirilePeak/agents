@@ -51,6 +51,72 @@ def place_entry_order_with_gate(
         if not allowed:
             # telemetry increments are done in RiskManager; ensure a log-friendly return
             return {"allowed": False, "reason": reason, "details": details}
+    # Deterministic A/B routing (50/50) based on token_id
+    settings = get_settings()
+    filters_enabled = False
+    try:
+        if getattr(settings, "ENTRY_FILTERS_AB_ENABLED", False):
+            import hashlib
+            h = hashlib.sha256(str(token_id).encode()).digest()[0]
+            variant = h % 2
+            # variant 1 = filters enabled
+            filters_enabled = (variant == 1)
+    except Exception:
+        filters_enabled = False
+
+    # If filters_enabled, apply simple entry filters using adapter/orderbook if available
+    if filters_enabled:
+        # MAX_ENTRY_PRICE
+        try:
+            max_price = getattr(settings, "MAX_ENTRY_PRICE", None)
+            if max_price is not None and price is not None:
+                if float(price) > float(max_price):
+                    telemetry.incr("market_data_blocked_max_entry_price_total", 1)
+                    details["blocked_by"] = "max_entry_price"
+                    details["max_entry_price"] = max_price
+                    return {"allowed": False, "reason": "max_entry_price", "details": details}
+        except Exception:
+            pass
+
+        # Need orderbook to compute edge and spread
+        try:
+            ob = None
+            provider = adapter or polymarket
+            if provider and getattr(provider, "get_orderbook", None):
+                ob = provider.get_orderbook(token_id)
+            if ob:
+                try:
+                    bids = getattr(ob, "bids", []) or []
+                    asks = getattr(ob, "asks", []) or []
+                    best_bid = float(bids[0].price) if bids else None
+                    best_ask = float(asks[0].price) if asks else None
+                    mid = None
+                    if best_bid is not None and best_ask is not None:
+                        mid = (best_bid + best_ask) / 2.0
+                    # MIN_EDGE_CENTS check (absolute difference)
+                    min_edge = getattr(settings, "MIN_EDGE_CENTS", None)
+                    if min_edge is not None and mid is not None and price is not None:
+                        edge = abs(float(price) - float(mid))
+                        if edge < float(min_edge):
+                            telemetry.incr("market_data_blocked_min_edge_total", 1)
+                            details["blocked_by"] = "min_edge"
+                            details["edge"] = edge
+                            details["min_edge"] = min_edge
+                            return {"allowed": False, "reason": "min_edge", "details": details}
+                    # MAX_SPREAD_PCT check
+                    max_sp = getattr(settings, "MAX_SPREAD_PCT", None)
+                    if max_sp is not None and best_bid is not None and best_ask is not None and mid is not None and mid > 0:
+                        spread_pct = (best_ask - best_bid) / mid
+                        if spread_pct > float(max_sp):
+                            telemetry.incr("market_data_blocked_max_spread_total", 1)
+                            details["blocked_by"] = "max_spread_pct"
+                            details["spread_pct"] = spread_pct
+                            details["max_spread_pct"] = max_sp
+                            return {"allowed": False, "reason": "max_spread_pct", "details": details}
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # Allowed: perform the order via polymarket, ensuring gate_checked flag
     try:

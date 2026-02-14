@@ -162,6 +162,11 @@ class Settings:
     # ------------------------------------------------------------------
     # Enforce gate at low-level Polymarket client to prevent bypass.
     ENTRY_GATE_ENFORCE_POLY: bool = True
+    # Entry filters (A/B test capable)
+    MAX_ENTRY_PRICE: Optional[float] = None
+    MIN_EDGE_CENTS: Optional[float] = None
+    MAX_SPREAD_PCT: Optional[float] = None
+    ENTRY_FILTERS_AB_ENABLED: bool = True
 
 
 _settings: Optional[Settings] = None
