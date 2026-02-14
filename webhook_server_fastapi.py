@@ -172,6 +172,13 @@ async def _market_data_shutdown():
             logger.info("MarketDataAdapter stopped")
         except Exception:
             logger.exception("Error stopping MarketDataAdapter during shutdown")
+    # clear app.state binding
+    try:
+        app.state.market_data_adapter = None
+        app.state.market_data_telemetry = None
+        app.state.market_data_pid = None
+    except Exception:
+        pass
 
 # Startup event
 @app.on_event("startup")
@@ -249,6 +256,16 @@ async def startup_event():
             try:
                 await _market_data_adapter.start()
                 logger.info("MarketDataAdapter started on startup")
+                # bind adapter and telemetry to app.state for admin/debug handlers
+                try:
+                    from src.market_data.telemetry import telemetry as _telemetry
+                    app.state.market_data_adapter = _market_data_adapter
+                    app.state.market_data_telemetry = _telemetry
+                    import os
+                    app.state.market_data_pid = os.getpid()
+                    logger.info("MarketDataAdapter bound to app.state (pid=%s)", app.state.market_data_pid)
+                except Exception:
+                    logger.exception("Failed to bind market_data_adapter to app.state")
                 # start lightweight consumer task that processes events and updates PnL (non-blocking)
                 try:
                     t = asyncio.create_task(market_data_event_consumer())

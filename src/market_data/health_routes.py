@@ -175,21 +175,18 @@ def register(app: FastAPI) -> None:
             raw_before = snap_before.get("counters", {}).get("market_data_raw_messages_total", 0)
             msg_before = snap_before.get("counters", {}).get("market_data_messages_total", 0)
 
-            # perform subscribe if requested and adapter available
+            # perform subscribe if requested and adapter available via app.state
             adapter_subscribed = False
             try:
-                import webhook_server_fastapi as ws  # type: ignore
-                adapter = getattr(ws, "_market_data_adapter", None)
+                adapter = getattr(request.app.state, "market_data_adapter", None)
                 if adapter is None:
                     notes.append("adapter_unavailable")
                 else:
                     if not dry_run and clob_token_ids:
-                        # subscribe all tokens (await)
                         for tk in clob_token_ids:
                             try:
                                 await adapter.subscribe(tk)
                             except Exception:
-                                # best-effort: continue
                                 notes.append(f"subscribe_failed:{tk[:8]}")
                         subscribed_count = len(clob_token_ids)
                         adapter_subscribed = True
@@ -206,11 +203,20 @@ def register(app: FastAPI) -> None:
 
             # build subscriptions snapshot best-effort
             try:
-                import webhook_server_fastapi as ws  # type: ignore
-                adapter2 = getattr(ws, "_market_data_adapter", None)
+                adapter2 = getattr(request.app.state, "market_data_adapter", None)
+                # fallback to module globals if state not set
+                if adapter2 is None:
+                    import webhook_server_fastapi as ws  # type: ignore
+                    adapter2 = getattr(ws, "_market_data_adapter", None)
+                    desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
+                    reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
+                else:
+                    # try to read module-level desired_refcount/reconcile_state as fallback too
+                    import webhook_server_fastapi as ws  # type: ignore
+                    desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
+                    reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
+
                 subs = set(getattr(adapter2, "_subs", set()) or set()) if adapter2 else set()
-                desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
-                reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
                 subs_list = []
                 all_tokens = sorted(set(list(subs) + list(desired_refcount.keys())))
                 for tk in all_tokens:
