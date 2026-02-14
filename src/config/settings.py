@@ -121,6 +121,13 @@ class Settings:
     # Debug endpoints should be exposed only behind VPN/ingress auth; token is a secondary guard.
     DEBUG_ENDPOINTS_ENABLED: bool = False
     DEBUG_ENDPOINTS_TOKEN: str | None = None
+    # BTC Up/Down timeframe settings (minutes)
+    BTC_UPDOWN_TIMEFRAME_MINUTES: int = 15
+    BTC_UPDOWN_ENABLE_5M: bool = True
+    # Entry timing gates (seconds)
+    BTC_UPDOWN_ENTRY_DEADLINE_SECONDS: int = 60
+    BTC_UPDOWN_MIN_TIME_TO_END_SECONDS: int = 30
+    BTC_UPDOWN_AUTO_CLOSE_BUFFER_SECONDS: int = 15
     # Entry / Risk Gates (conservative defaults)
     MAX_ENTRY_SPREAD: float = 0.05
     HARD_REJECT_SPREAD: float = 0.30

@@ -19,6 +19,7 @@ from agents.application.latency_stats import LatencyStats
 from src.utils.logger import get_logger
 from src.utils.exceptions import APIError, BotError
 from src.config.settings import get_settings
+from src.timeframes import floor_time, window_bounds, seconds_from_start, seconds_to_end
 
 # Type hint for WebSocket update (avoid circular import)
 if False:  # TYPE_CHECKING equivalent
@@ -111,7 +112,13 @@ class FastEntryEngine:
         self.speed_ratio_threshold = speed_ratio_threshold
         self.leg1_size_usdc = leg1_size_usdc
         self.poll_interval_ms = poll_interval_ms
-        self.market_prefix = market_prefix
+        # Determine timeframe from settings (default 15)
+        tf = getattr(settings, "BTC_UPDOWN_TIMEFRAME_MINUTES", 15)
+        if tf == 5 and not getattr(settings, "BTC_UPDOWN_ENABLE_5M", True):
+            logger.warning("5m timeframe disabled via settings; falling back to 15m")
+            tf = 15
+        self.timeframe_min = int(tf)
+        self.market_prefix = f"btc-updown-{self.timeframe_min}m"
         self.confirmation_timeout_seconds = confirmation_timeout_seconds
         self.use_websocket = use_websocket
         
@@ -316,6 +323,33 @@ class FastEntryEngine:
         # t_detect from signal
         t_detect = signal.t_detect_ms if hasattr(signal, 't_detect_ms') and signal.t_detect_ms else self._monotonic_ms()
         
+        # Timing gates: check entry deadline & min time to end for configured timeframe
+        try:
+            from src.config.settings import get_settings as _get_settings
+            _settings = _get_settings()
+            entry_deadline = int(getattr(_settings, "BTC_UPDOWN_ENTRY_DEADLINE_SECONDS", 60))
+            min_time_to_end = int(getattr(_settings, "BTC_UPDOWN_MIN_TIME_TO_END_SECONDS", 30))
+            auto_close_buffer = int(getattr(_settings, "BTC_UPDOWN_AUTO_CLOSE_BUFFER_SECONDS", 15))
+        except Exception:
+            entry_deadline = 60
+            min_time_to_end = 30
+            auto_close_buffer = 15
+
+        from datetime import datetime, timezone
+        now_dt = datetime.now(timezone.utc)
+        s_from_start = seconds_from_start(now_dt, self.timeframe_min)
+        s_to_end = seconds_to_end(now_dt, self.timeframe_min)
+        # Log timing context
+        logger.info(f"Entry timing: timeframe={self.timeframe_min}m start_offset_s={s_from_start} to_end_s={s_to_end} token={signal.token_id[:16]}")
+
+        if s_from_start > entry_deadline:
+            logger.info(f"Entry blocked by deadline: token={signal.token_id[:16]} timeframe={self.timeframe_min}m seconds_from_start={s_from_start} deadline={entry_deadline}")
+            return None
+
+        if s_to_end < min_time_to_end:
+            logger.info(f"Entry blocked too close to window end: token={signal.token_id[:16]} timeframe={self.timeframe_min}m seconds_to_end={s_to_end} min_required={min_time_to_end}")
+            return None
+
         # Pre-compute risk checks in parallel (if risk manager available)
         # This can be done while fetching market_id to save time
         risk_checks_passed = True
@@ -457,15 +491,20 @@ class FastEntryEngine:
             # Create active trade with position lock
             active_trade = None
             if market_id:
-                active_trade = self.position_manager.create_trade(
-                    market_id=market_id,
-                    token_id=signal.token_id,
-                    side=signal.side,
-                    leg1_size=self.leg1_size_usdc,
-                    leg1_price=signal.current_price,
-                    leg1_entry_id=entry_id,
-                    timeout_seconds=self.confirmation_timeout_seconds,
-                )
+                # Compute confirmation timeout relative to window end
+                ttl = max(0, s_to_end - auto_close_buffer)
+                if ttl <= 0:
+                    logger.info(f"Not creating trade: TTL <= 0 for token {signal.token_id[:16]} timeframe={self.timeframe_min}m ttl={ttl}")
+                else:
+                    active_trade = self.position_manager.create_trade(
+                        market_id=market_id,
+                        token_id=signal.token_id,
+                        side=signal.side,
+                        leg1_size=self.leg1_size_usdc,
+                        leg1_price=signal.current_price,
+                        leg1_entry_id=entry_id,
+                        timeout_seconds=int(ttl),
+                    )
                 
                 if active_trade:
                     # Store latency metrics in trade
