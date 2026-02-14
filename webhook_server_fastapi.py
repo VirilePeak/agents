@@ -40,6 +40,28 @@ except Exception as e:
 settings = get_settings()
 setup_logging(settings)
 logger = get_logger(__name__)
+from src.market_data.telemetry import telemetry as _md_telemetry
+
+
+def _update_subs_gauge():
+    """
+    Update the telemetry gauge `market_data_active_subscriptions` from adapter._subs.
+    Best-effort: safe if adapter missing.
+    """
+    try:
+        adapter = globals().get("_market_data_adapter", None)
+        if adapter is None:
+            # fallback to existing gauge if any
+            return
+        subs = getattr(adapter, "_subs", set()) or set()
+        count = len(subs)
+        try:
+            _md_telemetry.set_gauge("market_data_active_subscriptions", float(count))
+        except Exception:
+            pass
+        logger.info("Telemetry: market_data_active_subscriptions=%d", count)
+    except Exception:
+        logger.exception("Failed to update market_data_active_subscriptions gauge")
 
 # Confirmation store (persistent small JSON)
 _confirmation_store = ConfirmationStore(getattr(settings, "PENDING_CONFIRM_PATH", "pending_confirmations.json"))
@@ -393,6 +415,11 @@ async def startup_event():
                                         state.missing_count.pop(tk, None)
                                     except Exception:
                                         logger.exception("Reconcile: unsubscribe failed for %s", tk)
+                                # update telemetry gauge after reconcile actions
+                                try:
+                                    _update_subs_gauge()
+                                except Exception:
+                                    logger.debug("failed to update subs gauge after reconcile")
 
                                 # heartbeat log
                                 try:

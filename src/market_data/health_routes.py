@@ -42,6 +42,20 @@ def register(app: FastAPI) -> None:
             except Exception:
                 pass
 
+        # Prefer adapter internal state for active_subscriptions to avoid divergence
+        try:
+            import webhook_server_fastapi as ws  # type: ignore
+            adapter = getattr(ws, "_market_data_adapter", None)
+            if adapter is not None:
+                subs = set(getattr(adapter, "_subs", set()) or set())
+                active_subs = len(subs)
+        except Exception:
+            # fallback to telemetry gauge
+            try:
+                active_subs = int(metrics.get("gauges", {}).get("market_data_active_subscriptions", 0))
+            except Exception:
+                active_subs = active_subs
+
         ok = adapter_present and ws_connected
         return {
             "ok": ok,
