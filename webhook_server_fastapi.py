@@ -28,9 +28,11 @@ from src.utils.winrate_upgrade import ConfirmationStore, check_market_quality_fo
 
 # MarketDataAdapter import (optional - don't fail startup if unavailable)
 try:
-    from src.market_data.adapter import MarketDataAdapter
-except Exception:
-    MarketDataAdapter = None
+    from src.market_data.adapter import MarketDataAdapter as MarketDataAdapterClass
+    _adapter_import_error = None
+except Exception as e:
+    MarketDataAdapterClass = None
+    _adapter_import_error = repr(e)
     # logger may not be initialized yet; defer logging after setup_logging call
 
 # Initialize settings and logging
@@ -251,10 +253,19 @@ async def startup_event():
     try:
         if getattr(settings, "MARKET_DATA_WS_ENABLED", True):
             if _market_data_adapter is None:
-                _market_data_adapter = MarketDataAdapter()
-            # start adapter safely
+                if MarketDataAdapterClass is None:
+                    # Adapter class not available - log import error and skip starting adapter
+                    logger.error("MarketDataAdapter class unavailable, skipping adapter start. Import error: %s", getattr(globals(), "_adapter_import_error", "unknown"))
+                else:
+                    try:
+                        _market_data_adapter = MarketDataAdapterClass()
+                    except Exception as e:
+                        _market_data_adapter = None
+                        logger.exception("Failed to instantiate MarketDataAdapter: %s", e)
+            # start adapter safely if instantiated
             try:
-                await _market_data_adapter.start()
+                if _market_data_adapter:
+                    await _market_data_adapter.start()
                 logger.info("MarketDataAdapter started on startup")
                 # bind adapter and telemetry to app.state for admin/debug handlers
                 try:

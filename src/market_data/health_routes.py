@@ -33,6 +33,14 @@ def register(app: FastAPI) -> None:
         stale_tokens = 0
         if not adapter_present:
             notes.append("adapter_not_initialized")
+            # If adapter import previously failed, surface that error for diagnostics
+            try:
+                import webhook_server_fastapi as ws  # type: ignore
+                err = getattr(ws, "_adapter_import_error", None)
+                if err:
+                    notes.append(f"adapter_import_error:{err}")
+            except Exception:
+                pass
 
         ok = adapter_present and ws_connected
         return {
