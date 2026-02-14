@@ -267,6 +267,17 @@ def register(app: FastAPI) -> None:
                     adapter_glob = getattr(ws, "_market_data_adapter", None)
                     if adapter_glob and getattr(adapter_glob, "get_debug_samples", None):
                         ds = adapter_glob.get_debug_samples()
+                # if adapter2 itself exposes individual getters, use them as fallback
+                if ds is None and adapter2:
+                    try:
+                        if getattr(adapter2, "get_last_raw_sample", None):
+                            raw_sample = adapter2.get_last_raw_sample()
+                        if getattr(adapter2, "get_last_parse_error_sample", None):
+                            parse_error_sample = adapter2.get_last_parse_error_sample()
+                        if unknown_sample is None and getattr(adapter2, "get_unknown_sample", None):
+                            unknown_sample = adapter2.get_unknown_sample()
+                    except Exception:
+                        pass
                 if isinstance(ds, dict):
                     raw_sample = ds.get("raw_sample")
                     parse_error_sample = ds.get("parse_error_sample")

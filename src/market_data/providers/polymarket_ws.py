@@ -311,6 +311,72 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
             except Exception:
                 logger.exception("failed to process book message")
 
+        elif detected_type == "best_bid_ask" or detected_type == "best_bid_ask_update":
+            # Polymarket custom quote updates: treat as lightweight book/quote
+            try:
+                token_id = str(payload.get("asset_id") or payload.get("assetId") or token)
+                # parse numeric fields
+                try:
+                    best_bid_f = float(payload.get("best_bid") or payload.get("bestBid")) if (payload.get("best_bid") or payload.get("bestBid")) is not None else None
+                except Exception:
+                    best_bid_f = None
+                try:
+                    best_ask_f = float(payload.get("best_ask") or payload.get("bestAsk")) if (payload.get("best_ask") or payload.get("bestAsk")) is not None else None
+                except Exception:
+                    best_ask_f = None
+                # spread absolute
+                spread_abs = None
+                try:
+                    if payload.get("spread") is not None:
+                        spread_abs = float(payload.get("spread"))
+                    elif best_bid_f is not None and best_ask_f is not None:
+                        spread_abs = float(best_ask_f) - float(best_bid_f)
+                except Exception:
+                    spread_abs = None
+                # spread pct (relative)
+                spread_pct = None
+                try:
+                    if spread_abs is not None and best_bid_f is not None and best_ask_f is not None:
+                        mid = (best_bid_f + best_ask_f) / 2.0
+                        if mid:
+                            spread_pct = spread_abs / mid
+                except Exception:
+                    spread_pct = None
+                # timestamp handling (ms vs s)
+                ts_val = None
+                try:
+                    raw_ts = payload.get("timestamp") or m.get("timestamp")
+                    if raw_ts is not None:
+                        raw_ts_f = float(raw_ts)
+                        if raw_ts_f > 1e12:
+                            ts_val = raw_ts_f / 1000.0
+                        elif raw_ts_f > 1e9:
+                            ts_val = raw_ts_f
+                        else:
+                            ts_val = time.time()
+                    else:
+                        ts_val = time.time()
+                except Exception:
+                    ts_val = time.time()
+
+                ev = MarketEvent(
+                    ts=float(ts_val),
+                    type="book",
+                    token_id=token_id,
+                    best_bid=best_bid_f,
+                    best_ask=best_ask_f,
+                    spread_pct=spread_pct,
+                    data=m,
+                )
+                try:
+                    telemetry.incr("market_data_messages_total", 1)
+                    telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                except Exception:
+                    pass
+                self._safe_emit(ev)
+            except Exception:
+                logger.exception("failed to process best_bid_ask message")
+
         elif detected_type == "price_change":
             try:
                 changes = payload.get("price_changes") or payload.get("priceChanges") or []
