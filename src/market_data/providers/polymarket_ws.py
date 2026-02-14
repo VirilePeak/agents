@@ -359,9 +359,10 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                 except Exception:
                     ts_val = time.time()
 
+                # Emit as a lightweight quote update so consumers can use top-of-book quickly
                 ev = MarketEvent(
                     ts=float(ts_val),
-                    type="book",
+                    type="quote",
                     token_id=token_id,
                     best_bid=best_bid_f,
                     best_ask=best_ask_f,

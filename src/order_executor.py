@@ -38,7 +38,7 @@ def place_entry_order_with_gate(
             except Exception:
                 rm = None
 
-    if rm:
+    if rm and getattr(rm, "check_entry_allowed", None):
         allowed, reason, gate_details = rm.check_entry_allowed(
             token_id=token_id,
             confidence=confidence,
@@ -76,6 +76,76 @@ def place_entry_order_with_gate(
                     details["max_entry_price"] = max_price
                     return {"allowed": False, "reason": "max_entry_price", "details": details}
         except Exception:
+            pass
+        # --- Conservative sizing for Variant (apply only in AB variant) ---
+        try:
+            # helpers to get equity & open exposure
+            def get_current_equity() -> float:
+                try:
+                    from webhook_server_fastapi import get_risk_manager
+                    rm_local = get_risk_manager()
+                    if rm_local and getattr(rm_local, "current_equity", None) is not None:
+                        return float(rm_local.current_equity)
+                except Exception:
+                    pass
+                # fallback to settings
+                try:
+                    telemetry.incr("sizing_fallback_equity_total", 1)
+                except Exception:
+                    pass
+                return float(get_settings().INITIAL_EQUITY)
+
+            def get_open_exposure_notional() -> float:
+                try:
+                    from webhook_server_fastapi import get_position_manager
+                    pm_local = get_position_manager()
+                    if pm_local:
+                        total = 0.0
+                        for t in getattr(pm_local, "active_trades", {}).values():
+                            try:
+                                total += float(getattr(t, "total_size", 0.0) or 0.0)
+                            except Exception:
+                                pass
+                        return total
+                except Exception:
+                    pass
+                try:
+                    telemetry.incr("sizing_fallback_exposure_total", 1)
+                except Exception:
+                    pass
+                return 0.0
+
+            equity = get_current_equity()
+            open_exposure = get_open_exposure_notional()
+            budget_total = float(getattr(settings, "MAX_TOTAL_EXPOSURE_PCT", 0.10)) * equity
+            budget_left = max(0.0, budget_total - float(open_exposure))
+            desired = float(getattr(settings, "POSITION_RISK_PCT_PER_TRADE", 0.02)) * equity
+            final_size = min(desired, budget_left)
+            if final_size <= 0:
+                try:
+                    telemetry.incr("sizing_budget_exhausted_total", 1)
+                except Exception:
+                    pass
+                details["blocked_by"] = "exposure_budget_exhausted"
+                details["budget_total"] = budget_total
+                details["open_exposure"] = open_exposure
+                details["budget_left"] = budget_left
+                return {"allowed": False, "reason": "exposure_budget_exhausted", "details": details}
+            # apply final size (may be capped)
+            if final_size < size:
+                try:
+                    telemetry.incr("sizing_capped_total", 1)
+                except Exception:
+                    pass
+            try:
+                telemetry.incr("sizing_variant_applied_total", 1)
+            except Exception:
+                pass
+            size = float(final_size)
+            details["sizing_applied"] = True
+            details["final_size"] = size
+        except Exception:
+            # sizing fallback: proceed with original size
             pass
 
         # Need orderbook to compute edge and spread
