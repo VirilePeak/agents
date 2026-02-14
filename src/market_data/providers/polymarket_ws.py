@@ -115,6 +115,10 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         try:
             logger.debug("WS send subscribe_op: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
+            try:
+                telemetry.incr("market_data_subscribe_sent_total", 1)
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("subscribe_op send failed: %s", e)
 
@@ -125,6 +129,10 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         try:
             logger.debug("WS send unsubscribe_op: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
+            try:
+                telemetry.incr("market_data_unsubscribe_sent_total", 1)
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("unsubscribe_op send failed: %s", e)
 
@@ -140,6 +148,15 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                     # initial handshake subscribe if any (type=market)
                     if self._subs:
                         await self._send_subscribe(list(self._subs))
+                        # After handshake, attempt to flush pending subscribe operations as well
+                        try:
+                            await self._send_subscribe_op(list(self._subs))
+                            try:
+                                telemetry.incr("market_data_subscribe_sent_total", 1)
+                            except Exception:
+                                pass
+                        except Exception:
+                            logger.debug("failed to flush subscribe_op after handshake")
 
                     async for raw in ws:
                         # count raw messages immediately for diagnostics
@@ -147,9 +164,21 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                             telemetry.incr("market_data_raw_messages_total", 1)
                         except Exception:
                             pass
+                        # raw may be bytes or str
                         try:
-                            msg = json.loads(raw)
+                            if isinstance(raw, (bytes, bytearray)):
+                                raw_s = raw.decode("utf-8", errors="ignore")
+                            else:
+                                raw_s = str(raw)
                         except Exception:
+                            raw_s = str(raw)
+                        try:
+                            msg = json.loads(raw_s)
+                        except Exception:
+                            try:
+                                telemetry.incr("market_data_parse_errors_total", 1)
+                            except Exception:
+                                pass
                             continue
                         # Normalize messages: handle 'book', 'price_change', 'last_trade_price'
                         etype = msg.get("event_type") or msg.get("type") or msg.get("topic")
