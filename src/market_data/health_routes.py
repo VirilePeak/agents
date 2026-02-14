@@ -2,6 +2,13 @@ from __future__ import annotations
 from fastapi import FastAPI, Request, HTTPException
 from typing import Any
 from src.market_data.telemetry import telemetry
+from fastapi import Request, HTTPException
+from src.config.settings import get_settings
+import asyncio
+import time
+import httpx
+from typing import Any
+from src.market_discovery.btc_updown import find_current_btc_updown_market, NoCurrentMarket, derive_btc_updown_slug_from_signal_id
 from src.config.settings import get_settings
 
 
@@ -101,4 +108,144 @@ def register(app: FastAPI) -> None:
             return {"ok": True, "active_subscriptions": len(subs), "tokens": tokens}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def _require_debug_access(request: Request) -> None:
+        settings = get_settings()
+        if not getattr(settings, "DEBUG_ENDPOINTS_ENABLED", False):
+            # hide endpoint when disabled
+            raise HTTPException(status_code=404, detail="not found")
+        token_required = getattr(settings, "DEBUG_ENDPOINTS_TOKEN", None)
+        if token_required:
+            header_token = request.headers.get("X-Debug-Token")
+            if header_token != token_required:
+                raise HTTPException(status_code=403, detail="invalid debug token")
+
+    @app.post("/market-data/admin/discover-subscribe")
+    async def market_data_admin_discover_subscribe(request: Request) -> Any:
+        """
+        Debug one-shot: discover 5m/15m market, optionally subscribe adapter to clob tokens,
+        wait a few seconds and report telemetry + subscriptions.
+        """
+        _require_debug_access(request)
+        body = await request.json()
+        timeframe_minutes = int(body.get("timeframe_minutes", 5))
+        signal_id = body.get("signal_id")
+        dry_run = bool(body.get("dry_run", False))
+        wait_seconds = int(body.get("wait_seconds", 8))
+        wait_seconds = max(0, min(wait_seconds, 20))
+
+        notes: list[str] = []
+        derived_slug = None
+        market_slug = None
+        market_id = None
+        clob_token_ids: list[str] = []
+        subscribed_count = 0
+
+        try:
+            now_ts = time.time()
+            if signal_id:
+                try:
+                    derived_slug = derive_btc_updown_slug_from_signal_id(signal_id, timeframe_minutes)
+                except Exception:
+                    derived_slug = None
+
+            # attempt discovery
+            try:
+                mi = find_current_btc_updown_market(timeframe_minutes, now_ts, http_client=httpx.Client(timeout=10), signal_id=signal_id)
+                market = mi.get("market") or {}
+                market_slug = market.get("slug")
+                market_id = market.get("id")
+                clob = market.get("clobTokenIds") or mi.get("clobTokenIds") or []
+                if isinstance(clob, str):
+                    try:
+                        import json as _json
+                        clob = _json.loads(clob)
+                    except Exception:
+                        clob = [clob]
+                clob_token_ids = [str(x) for x in (clob or [])]
+            except NoCurrentMarket as e:
+                notes.append(f"no_current_market: {e}")
+                return {"ok": False, "derived_slug": derived_slug, "notes": notes}
+            except Exception as e:
+                notes.append(f"discovery_error: {e}")
+                return {"ok": False, "notes": notes}
+
+            # telemetry snapshot before
+            snap_before = telemetry.get_snapshot()
+            raw_before = snap_before.get("counters", {}).get("market_data_raw_messages_total", 0)
+            msg_before = snap_before.get("counters", {}).get("market_data_messages_total", 0)
+
+            # perform subscribe if requested and adapter available
+            adapter_subscribed = False
+            try:
+                import webhook_server_fastapi as ws  # type: ignore
+                adapter = getattr(ws, "_market_data_adapter", None)
+                if adapter is None:
+                    notes.append("adapter_unavailable")
+                else:
+                    if not dry_run and clob_token_ids:
+                        # subscribe all tokens (await)
+                        for tk in clob_token_ids:
+                            try:
+                                await adapter.subscribe(tk)
+                            except Exception:
+                                # best-effort: continue
+                                notes.append(f"subscribe_failed:{tk[:8]}")
+                        subscribed_count = len(clob_token_ids)
+                        adapter_subscribed = True
+            except Exception as e:
+                notes.append(f"adapter_access_error:{e}")
+
+            # wait for traffic
+            await asyncio.sleep(wait_seconds)
+
+            snap_after = telemetry.get_snapshot()
+            raw_after = snap_after.get("counters", {}).get("market_data_raw_messages_total", 0)
+            msg_after = snap_after.get("counters", {}).get("market_data_messages_total", 0)
+            last_msg_age_s = snap_after.get("last_msg_age_s")
+
+            # build subscriptions snapshot best-effort
+            try:
+                import webhook_server_fastapi as ws  # type: ignore
+                adapter2 = getattr(ws, "_market_data_adapter", None)
+                subs = set(getattr(adapter2, "_subs", set()) or set()) if adapter2 else set()
+                desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
+                reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
+                subs_list = []
+                all_tokens = sorted(set(list(subs) + list(desired_refcount.keys())))
+                for tk in all_tokens:
+                    refcount = int(desired_refcount.get(tk, 1 if tk in subs else 0))
+                    missing = 0
+                    if reconcile_state is not None:
+                        missing = int(getattr(reconcile_state, "missing_count", {}).get(tk, 0))
+                    subs_list.append({"token_id": tk, "refcount": refcount, "missing_cycles": missing})
+                subscriptions = {"active_subscriptions": len(subs), "tokens": subs_list}
+            except Exception:
+                subscriptions = {"ok": False, "error": "could_not_read_adapter_state"}
+
+            metrics = snap_after
+
+            traffic_check = {
+                "raw_messages_before": raw_before,
+                "raw_messages_after": raw_after,
+                "messages_before": msg_before,
+                "messages_after": msg_after,
+                "last_msg_age_s": last_msg_age_s,
+            }
+
+            return {
+                "ok": True,
+                "derived_slug": derived_slug,
+                "market_slug": market_slug,
+                "market_id": market_id,
+                "clob_token_ids": clob_token_ids,
+                "subscribed_count": subscribed_count,
+                "adapter_subscribed": adapter_subscribed,
+                "traffic_check": traffic_check,
+                "metrics": metrics,
+                "subscriptions": subscriptions,
+                "notes": notes,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e), "notes": notes}
 
