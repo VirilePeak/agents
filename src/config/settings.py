@@ -167,6 +167,10 @@ class Settings:
     MIN_EDGE_CENTS: Optional[float] = None
     MAX_SPREAD_PCT: Optional[float] = None
     ENTRY_FILTERS_AB_ENABLED: bool = True
+    # Variant-specific conservative defaults (used when routing places trade in variant bucket)
+    MAX_SPREAD_PCT_VARIANT: Optional[float] = 0.03
+    MIN_EDGE_CENTS_VARIANT: Optional[float] = 0.02
+    MAX_ENTRY_PRICE_VARIANT: Optional[float] = None
     # FastExit settings (A/B)
     FAST_EXIT_AB_ENABLED: bool = True
     FAST_EXIT_TIME_STOP_S: int = 90
@@ -176,6 +180,8 @@ class Settings:
     FAST_EXIT_MAX_HOLD_S: int = 120
     POSITION_RISK_PCT_PER_TRADE: float = 0.02
     MAX_TOTAL_EXPOSURE_PCT: float = 0.10
+    # How long to keep a token subscribed after a signal (seconds)
+    SUBSCRIBE_KEEPALIVE_SECONDS: int = 180
 
 
 _settings: Optional[Settings] = None
@@ -284,6 +290,11 @@ def _load_from_env(settings: Settings) -> None:
     set_if("KILL_SWITCH_MAX_REALIZED_LOSS", lambda v: parse_float(v, settings.KILL_SWITCH_MAX_REALIZED_LOSS))
     set_if("KILL_SWITCH_MIN_WINRATE", lambda v: parse_float(v, settings.KILL_SWITCH_MIN_WINRATE))
     set_if("KILL_SWITCH_COOLDOWN_SECONDS", lambda v: parse_int(v, settings.KILL_SWITCH_COOLDOWN_SECONDS))
+    # Variant-specific env overrides
+    set_if("MAX_SPREAD_PCT_VARIANT", lambda v: parse_float(v, settings.MAX_SPREAD_PCT_VARIANT))
+    set_if("MIN_EDGE_CENTS_VARIANT", lambda v: parse_float(v, settings.MIN_EDGE_CENTS_VARIANT))
+    set_if("MAX_ENTRY_PRICE_VARIANT", lambda v: parse_float(v, settings.MAX_ENTRY_PRICE_VARIANT))
+    set_if("SUBSCRIBE_KEEPALIVE_SECONDS", lambda v: parse_int(v, getattr(settings, "SUBSCRIBE_KEEPALIVE_SECONDS", 180)))
 
 
 def get_settings() -> Settings:

@@ -19,6 +19,7 @@ from collections import defaultdict
 # Infrastructure imports
 from src.config.settings import get_settings, is_live_trading_allowed, is_paper_trading, get_trading_mode_str
 from src.utils.logger import setup_logging, get_logger
+from src.utils.ab_router import ab_bucket, ab_variant
 from src.utils.exceptions import BotError, ValidationError, APIError
 from src.utils.helpers import (
     parse_bool, parse_int, parse_float, normalize_signal,
@@ -83,6 +84,8 @@ _rehydrate_errors = 0
 # Format: {signal_id: timestamp}
 _signal_id_cache: Dict[str, float] = {}
 _signal_id_cache_ttl_seconds = 30 * 60  # 30 minutes
+# Keepalive tokens requested on signal accept for short time (avoid immediate unsubscribe)
+_subscribe_keepalive: dict = {}
 _duplicate_signals_count = 0
 
 # MarketData adapter singleton and tasks (managed on startup/shutdown)
@@ -328,6 +331,39 @@ async def startup_event():
                                     if not tk:
                                         continue
                                     desired_refcount[tk] = desired_refcount.get(tk, 0) + 1
+                                # Include keepalive tokens requested on signals (if not expired)
+                                try:
+                                    now_ts = time.time()
+                                    # cleanup expired keepalive entries
+                                    expired = [k for k, v in _subscribe_keepalive.items() if v < now_ts]
+                                    for k in expired:
+                                        try:
+                                            del _subscribe_keepalive[k]
+                                        except Exception:
+                                            pass
+                                    for tk, expiry in _subscribe_keepalive.items():
+                                        if expiry >= now_ts:
+                                            desired_refcount[tk] = max(desired_refcount.get(tk, 0), 1)
+                                except Exception:
+                                    pass
+                                # Also include tokens referenced by pending confirmations (best-effort)
+                                try:
+                                    pending_data = getattr(_confirmation_store, '_data', {}) if _confirmation_store else {}
+                                    for key, entry in (pending_data or {}).items():
+                                        payload = entry.get('payload') or {}
+                                        # try common token fields
+                                        for candidate in ('token_id', 'tokenId', 'clob_token_id', 'clobTokenId'):
+                                            if isinstance(payload, dict) and candidate in payload and payload.get(candidate):
+                                                tk = str(payload.get(candidate))
+                                                desired_refcount[tk] = max(desired_refcount.get(tk, 0), 1)
+                                        # clob list fallback
+                                        for list_key in ('clob_token_ids', 'clobTokenIds', 'token_ids', 'tokenIds'):
+                                            v = payload.get(list_key) if isinstance(payload, dict) else None
+                                            if isinstance(v, list) and v:
+                                                tk = str(v[0])
+                                                desired_refcount[tk] = max(desired_refcount.get(tk, 0), 1)
+                                except Exception:
+                                    pass
 
                                 # update exported desired_refcount snapshot
                                 try:
@@ -1258,6 +1294,64 @@ def resolve_up_down_tokens(market: dict):
 
 def append_jsonl(path: str, obj: dict) -> None:
     """Append JSON object to JSONL file."""
+    # attempt to attach routing_key / ab info for downstream analysis
+    AB_KEYS = [
+        "routing_key_used", "routing_key", "router_key", "ab_key",
+        "token_id", "tokenId", "clob_token_id", "clobTokenId",
+        "outcome_token_id", "outcomeTokenId",
+        "yes_token_id", "no_token_id",
+        "token", "tokenId",
+        "asset_id", "assetId",
+        "market_id", "marketId",
+        "signal_id", "signalId",
+    ]
+
+    def _norm(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+    def _deep_find(obj):
+        if isinstance(obj, dict):
+            for k in AB_KEYS:
+                if k in obj:
+                    v = _norm(obj.get(k))
+                    if v is not None:
+                        return v
+            for v in obj.values():
+                res = _deep_find(v)
+                if res is not None:
+                    return res
+        elif isinstance(obj, list):
+            for it in obj:
+                res = _deep_find(it)
+                if res is not None:
+                    return res
+        return None
+
+    try:
+        if "routing_key_used" not in obj:
+            rk = _deep_find(obj)
+            if rk is not None:
+                obj["routing_key_used"] = rk
+                try:
+                    obj["ab_bucket"] = ab_bucket(rk)
+                    obj["ab_variant"] = ab_variant(rk)
+                except Exception:
+                    obj["ab_bucket"] = None
+                    obj["ab_variant"] = None
+            else:
+                obj["routing_key_used"] = None
+                obj["ab_bucket"] = None
+                obj["ab_variant"] = None
+    except Exception:
+        # best-effort enrichment, do not fail logging
+        pass
+
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -3869,6 +3963,48 @@ def webhook(payload: WebhookPayload):
                                 status = result.get("status")
                                 if status == "pending":
                                     logger.info(f"[{request_id}] confirmation_pending: key={conf_key} delay={getattr(settings, 'CONFIRMATION_DELAY_SECONDS', 60)}s ttl={getattr(settings, 'CONFIRMATION_TTL_SECONDS', 180)}s")
+                                    # Best-effort: derive market slug and subscribe to tokens while confirmation pending
+                                    try:
+                                        from src.market_discovery.btc_updown import derive_btc_updown_slug_from_signal_id
+                                        slug = derive_btc_updown_slug_from_signal_id(sig_id, getattr(settings, "BTC_UPDOWN_TIMEFRAME_MINUTES", 5))
+                                        if not slug:
+                                            # fallback to computed slot-based slug if signal_id not parseable
+                                            now_ts = int(time.time())
+                                            slot = current_slot_start(now_ts)
+                                            slug = slug_for_slot(slot)
+                                        market = fetch_market_by_slug(slug)
+                                        if market:
+                                            clob = market.get("clobTokenIds")
+                                            if isinstance(clob, str):
+                                                try:
+                                                    clob = json.loads(clob)
+                                                except Exception:
+                                                    clob = None
+                                            if isinstance(clob, list):
+                                                try:
+                                                    for tk in clob:
+                                                        tk_s = str(tk)
+                                                        # schedule subscribe non-blocking
+                                                        if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
+                                                            try:
+                                                                loop = asyncio.get_running_loop()
+                                                                loop.create_task(_market_data_adapter.subscribe(tk_s))
+                                                            except RuntimeError:
+                                                                import threading
+                                                                threading.Thread(target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(tk_s))).start()
+                                                            logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled for pending confirmation token {str(tk_s)[:18]}...")
+                                                        # add to keepalive map
+                                                        try:
+                                                            from src.config.settings import get_settings as _get_s
+                                                            _s = _get_s()
+                                                            keep_secs = getattr(_s, "SUBSCRIBE_KEEPALIVE_SECONDS", 180)
+                                                        except Exception:
+                                                            keep_secs = 180
+                                                        _subscribe_keepalive[tk_s] = time.time() + float(keep_secs)
+                                                except Exception:
+                                                    logger.exception(f"[{request_id}] error scheduling subscribe for pending confirmation tokens")
+                                    except Exception:
+                                        logger.debug(f"[{request_id}] could not derive/subscribe pending tokens (non-fatal)")
                                     return {
                                         "status": "pending_confirmation",
                                         "signal_id": sig_id,
