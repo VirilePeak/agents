@@ -65,7 +65,8 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                 elif hasattr(ws, "open"):
                     connected = bool(getattr(ws, "open"))
             if connected:
-                await self._send_subscribe(list(token_ids))
+                # send operation-based subscribe when already connected
+                await self._send_subscribe_op(list(token_ids))
             else:
                 logger.debug("subscribe: websocket not connected, queued tokens (no send)")
         except Exception:
