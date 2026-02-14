@@ -96,22 +96,36 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
             logger.exception("unsubscribe: unexpected error while attempting to send unsubscribe")
 
     async def _send_subscribe(self, token_ids: List[str]) -> None:
+        # legacy handshake (used on initial connect)
         if not token_ids:
             return
         msg = {"assets_ids": token_ids, "type": "market"}
         try:
+            logger.debug("WS send handshake: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
         except Exception as e:
-            logger.debug("subscribe send failed: %s", e)
+            logger.debug("handshake send failed: %s", e)
+
+    async def _send_subscribe_op(self, token_ids: List[str]) -> None:
+        # operation-based subscribe (used after connect)
+        if not token_ids:
+            return
+        msg = {"assets_ids": token_ids, "operation": "subscribe"}
+        try:
+            logger.debug("WS send subscribe_op: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
+            await self._ws.send(json.dumps(msg))
+        except Exception as e:
+            logger.debug("subscribe_op send failed: %s", e)
 
     async def _send_unsubscribe(self, token_ids: List[str]) -> None:
         if not token_ids:
             return
         msg = {"assets_ids": token_ids, "operation": "unsubscribe"}
         try:
+            logger.debug("WS send unsubscribe_op: count=%d sample=%s", len(token_ids), ",".join(str(x) for x in list(token_ids)[:3]))
             await self._ws.send(json.dumps(msg))
         except Exception as e:
-            logger.debug("unsubscribe send failed: %s", e)
+            logger.debug("unsubscribe_op send failed: %s", e)
 
     async def _run_loop(self) -> None:
         backoff = 1.0
@@ -122,11 +136,16 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                     self._ws = ws
                     telemetry.set_gauge("market_data_ws_connected", 1.0)
                     backoff = 1.0
-                    # initial subscribe if any
+                    # initial handshake subscribe if any (type=market)
                     if self._subs:
                         await self._send_subscribe(list(self._subs))
 
                     async for raw in ws:
+                        # count raw messages immediately for diagnostics
+                        try:
+                            telemetry.incr("market_data_raw_messages_total", 1)
+                        except Exception:
+                            pass
                         try:
                             msg = json.loads(raw)
                         except Exception:
