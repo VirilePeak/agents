@@ -255,25 +255,23 @@ def register(app: FastAPI) -> None:
             except Exception:
                 unknown_sample = None
 
-            # attempt to surface raw / parse_error samples
+            # attempt to surface debug samples from adapter.get_debug_samples()
             raw_sample = None
             parse_error_sample = None
             try:
-                if adapter2:
-                    get_raw = getattr(adapter2, "get_last_raw_sample", None)
-                    get_parse = getattr(adapter2, "get_last_parse_error_sample", None)
-                    if get_raw:
-                        raw_sample = get_raw()
-                    if get_parse:
-                        parse_error_sample = get_parse()
-                if raw_sample is None or parse_error_sample is None:
+                ds = None
+                if adapter2 and getattr(adapter2, "get_debug_samples", None):
+                    ds = adapter2.get_debug_samples()
+                if ds is None:
                     import webhook_server_fastapi as ws  # type: ignore
                     adapter_glob = getattr(ws, "_market_data_adapter", None)
-                    if adapter_glob:
-                        if raw_sample is None and getattr(adapter_glob, "get_last_raw_sample", None):
-                            raw_sample = adapter_glob.get_last_raw_sample()
-                        if parse_error_sample is None and getattr(adapter_glob, "get_last_parse_error_sample", None):
-                            parse_error_sample = adapter_glob.get_last_parse_error_sample()
+                    if adapter_glob and getattr(adapter_glob, "get_debug_samples", None):
+                        ds = adapter_glob.get_debug_samples()
+                if isinstance(ds, dict):
+                    raw_sample = ds.get("raw_sample")
+                    parse_error_sample = ds.get("parse_error_sample")
+                    if unknown_sample is None:
+                        unknown_sample = ds.get("unknown_sample")
             except Exception:
                 raw_sample = None
                 parse_error_sample = None

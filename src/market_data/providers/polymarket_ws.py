@@ -179,6 +179,27 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         """Return the last parse-error raw sample (truncated) or None."""
         return self._last_parse_error_sample
 
+    # Backwards/alternative attribute names requested by consumers
+    @property
+    def raw_sample(self) -> str | None:
+        return self._last_raw_sample
+
+    @property
+    def parse_error_sample(self) -> str | None:
+        return self._last_parse_error_sample
+
+    @property
+    def unknown_sample(self) -> dict | None:
+        return self._unknown_sample
+
+    def get_debug_samples(self) -> dict:
+        """Return all debug samples in a simple dict."""
+        return {
+            "unknown_sample": self.unknown_sample,
+            "raw_sample": self.raw_sample,
+            "parse_error_sample": self.parse_error_sample,
+        }
+
     async def process_raw(self, raw: bytes | str) -> object | None:
         """
         Process a raw WS frame: decode, store a raw sample, try to json.loads and

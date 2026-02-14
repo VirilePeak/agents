@@ -91,6 +91,20 @@ class MarketDataAdapter:
         snap = self.cache.get(token_id)
         return snap
 
+    def get_debug_samples(self) -> dict:
+        """Return debug samples from the underlying provider (best-effort)."""
+        try:
+            if getattr(self.provider, "get_debug_samples", None):
+                return self.provider.get_debug_samples()
+            # fallback to individual getters
+            return {
+                "unknown_sample": getattr(self.provider, "get_unknown_sample", lambda: None)(),
+                "raw_sample": getattr(self.provider, "get_last_raw_sample", lambda: None)(),
+                "parse_error_sample": getattr(self.provider, "get_last_parse_error_sample", lambda: None)(),
+            }
+        except Exception:
+            return {"unknown_sample": None, "raw_sample": None, "parse_error_sample": None}
+
     def _on_provider_event(self, ev: MarketEvent) -> None:
         # called in provider's event loop; schedule cache update + bus publish
         try:
