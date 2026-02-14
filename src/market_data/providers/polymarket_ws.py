@@ -136,6 +136,94 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         except Exception as e:
             logger.debug("unsubscribe_op send failed: %s", e)
 
+    async def _handle_dict_msg(self, m: dict) -> None:
+        """
+        Normalize and dispatch a single message dict (book / price_change / trade).
+        Extracted into a method for clarity and testability.
+        """
+        try:
+            etype = m.get("event_type") or m.get("type") or m.get("topic")
+            token = m.get("asset_id") or m.get("assetId") or m.get("market") or m.get("asset")
+            # update last-msg timestamp for telemetry (use wall clock)
+            try:
+                telemetry.set_last_msg_ts(time.time())
+            except Exception:
+                pass
+
+            if etype == "book":
+                bids = m.get("bids") or m.get("buys") or []
+                asks = m.get("asks") or m.get("sells") or []
+                raw_ob = {"bids": bids, "asks": asks}
+                snapshot = OrderBookSnapshot.from_raw(str(m.get("asset_id") or token), raw_ob, source="ws")
+                ev = MarketEvent(
+                    ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                    type="book",
+                    token_id=snapshot.token_id,
+                    best_bid=snapshot.best_bid,
+                    best_ask=snapshot.best_ask,
+                    spread_pct=snapshot.spread_pct,
+                    data=m,
+                )
+                if self.on_event:
+                    try:
+                        self.on_event(ev)
+                    except Exception:
+                        logger.exception("on_event handler failed")
+                try:
+                    telemetry.incr("market_data_messages_total", 1)
+                    telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                except Exception:
+                    pass
+            elif etype == "price_change":
+                changes = m.get("price_changes") or m.get("priceChanges") or []
+                for pc in changes:
+                    token_id = str(pc.get("asset_id") or pc.get("assetId") or token)
+                    ev = MarketEvent(
+                        ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                        type="price_change",
+                        token_id=token_id,
+                        best_bid=pc.get("best_bid"),
+                        best_ask=pc.get("best_ask"),
+                        spread_pct=None,
+                        data=pc,
+                    )
+                    if self.on_event:
+                        try:
+                            self.on_event(ev)
+                        except Exception:
+                            logger.exception("on_event handler failed")
+                    try:
+                        telemetry.incr("market_data_messages_total", 1)
+                        telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                    except Exception:
+                        pass
+            elif etype == "last_trade_price":
+                token_id = str(m.get("asset_id") or token)
+                ev = MarketEvent(
+                    ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
+                    type="trade",
+                    token_id=token_id,
+                    best_bid=None,
+                    best_ask=None,
+                    spread_pct=None,
+                    data=m,
+                )
+                if self.on_event:
+                    try:
+                        self.on_event(ev)
+                    except Exception:
+                        logger.exception("on_event handler failed")
+                try:
+                    telemetry.incr("market_data_messages_total", 1)
+                    telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
+                except Exception:
+                    pass
+            else:
+                # ignore other types
+                return
+        except Exception:
+            logger.exception("processing single ws message failed")
+
     async def _run_loop(self) -> None:
         backoff = 1.0
         while self._running:
@@ -181,96 +269,13 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                                 pass
                             continue
 
-                        async def _process_single(m: dict) -> None:
-                            # Normalize and dispatch a single message dict
-                            try:
-                                etype = m.get("event_type") or m.get("type") or m.get("topic")
-                                token = m.get("asset_id") or m.get("assetId") or m.get("market") or m.get("asset")
-                                # update last-msg timestamp for telemetry (use wall clock)
-                                try:
-                                    telemetry.set_last_msg_ts(time.time())
-                                except Exception:
-                                    pass
-
-                                if etype == "book":
-                                    bids = m.get("bids") or m.get("buys") or []
-                                    asks = m.get("asks") or m.get("sells") or []
-                                    raw_ob = {"bids": bids, "asks": asks}
-                                    snapshot = OrderBookSnapshot.from_raw(str(m.get("asset_id") or token), raw_ob, source="ws")
-                                    ev = MarketEvent(
-                                        ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
-                                        type="book",
-                                        token_id=snapshot.token_id,
-                                        best_bid=snapshot.best_bid,
-                                        best_ask=snapshot.best_ask,
-                                        spread_pct=snapshot.spread_pct,
-                                        data=m,
-                                    )
-                                    if self.on_event:
-                                        try:
-                                            self.on_event(ev)
-                                        except Exception:
-                                            logger.exception("on_event handler failed")
-                                    try:
-                                        telemetry.incr("market_data_messages_total", 1)
-                                        telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
-                                    except Exception:
-                                        pass
-                                elif etype == "price_change":
-                                    changes = m.get("price_changes") or m.get("priceChanges") or []
-                                    for pc in changes:
-                                        token_id = str(pc.get("asset_id") or pc.get("assetId") or token)
-                                        ev = MarketEvent(
-                                            ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
-                                            type="price_change",
-                                            token_id=token_id,
-                                            best_bid=pc.get("best_bid"),
-                                            best_ask=pc.get("best_ask"),
-                                            spread_pct=None,
-                                            data=pc,
-                                        )
-                                        if self.on_event:
-                                            try:
-                                                self.on_event(ev)
-                                            except Exception:
-                                                logger.exception("on_event handler failed")
-                                        try:
-                                            telemetry.incr("market_data_messages_total", 1)
-                                            telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
-                                        except Exception:
-                                            pass
-                                elif etype == "last_trade_price":
-                                    token_id = str(m.get("asset_id") or token)
-                                    ev = MarketEvent(
-                                        ts=float(m.get("timestamp") or 0)/1000.0 if m.get("timestamp") else float(asyncio.get_event_loop().time()),
-                                        type="trade",
-                                        token_id=token_id,
-                                        best_bid=None,
-                                        best_ask=None,
-                                        spread_pct=None,
-                                        data=m,
-                                    )
-                                    if self.on_event:
-                                        try:
-                                            self.on_event(ev)
-                                        except Exception:
-                                            logger.exception("on_event handler failed")
-                                    try:
-                                        telemetry.incr("market_data_messages_total", 1)
-                                        telemetry.set_gauge("market_data_active_subscriptions", float(len(self._subs)))
-                                    except Exception:
-                                        pass
-                                else:
-                                    # ignore other types
-                                    return
-                            except Exception:
-                                logger.exception("processing single ws message failed")
+                        # helper to process dict messages moved into class method _handle_dict_msg
 
                         # msg may be a list (batch) or a single dict
                         if isinstance(parsed, list):
                             for item in parsed:
                                 if isinstance(item, dict):
-                                    await _process_single(item)
+                                    await self._handle_dict_msg(item)
                                 else:
                                     try:
                                         telemetry.incr("market_data_parse_errors_total", 1)
@@ -285,7 +290,7 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                                 pass
                             continue
 
-                        await _process_single(parsed)
+                        await self._handle_dict_msg(parsed)
             except asyncio.CancelledError:
                 break
             except Exception as e:
