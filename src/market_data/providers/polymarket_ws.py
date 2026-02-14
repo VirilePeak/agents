@@ -27,6 +27,11 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         self._unknown_sample_logged: bool = False
         # store one unknown sample per-connection for debugging
         self._unknown_sample: dict | None = None
+        # last raw sample (truncated) and parse-error sample
+        self._last_raw_sample: str | None = None
+        self._raw_sample_logged: bool = False
+        self._last_parse_error_sample: str | None = None
+        self._parse_error_logged: bool = False
         self._ping_interval = ping_interval
         self._pong_timeout = pong_timeout
 
@@ -165,6 +170,56 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
     def get_unknown_sample(self) -> dict | None:
         """Return a captured unknown sample for debugging (or None)."""
         return self._unknown_sample
+
+    def get_last_raw_sample(self) -> str | None:
+        """Return the last raw frame sample (truncated) or None."""
+        return self._last_raw_sample
+
+    def get_last_parse_error_sample(self) -> str | None:
+        """Return the last parse-error raw sample (truncated) or None."""
+        return self._last_parse_error_sample
+
+    async def process_raw(self, raw: bytes | str) -> object | None:
+        """
+        Process a raw WS frame: decode, store a raw sample, try to json.loads and
+        return the parsed object (dict/list) or None on parse error.
+        This encapsulates the decoding + parse-error telemetry and sample capture.
+        """
+        # decode raw
+        try:
+            if isinstance(raw, (bytes, bytearray)):
+                raw_s = raw.decode("utf-8", errors="ignore")
+            else:
+                raw_s = str(raw)
+        except Exception:
+            raw_s = str(raw)
+
+        # store truncated raw sample (one per connection logged)
+        try:
+            self._last_raw_sample = (raw_s[:800]) if raw_s is not None else None
+            if not getattr(self, "_raw_sample_logged", False):
+                logger.warning("WS raw sample: %s", (self._last_raw_sample or "")[:400])
+                self._raw_sample_logged = True
+        except Exception:
+            pass
+
+        # try parse
+        try:
+            parsed = json.loads(raw_s)
+            return parsed
+        except Exception:
+            try:
+                telemetry.incr("market_data_parse_errors_total", 1)
+            except Exception:
+                pass
+            try:
+                self._last_parse_error_sample = (raw_s[:800]) if raw_s is not None else None
+                if not getattr(self, "_parse_error_logged", False):
+                    logger.warning("WS json parse error sample: %s", (self._last_parse_error_sample or "")[:400])
+                    self._parse_error_logged = True
+            except Exception:
+                pass
+            return None
 
     async def _handle_dict_msg(self, m: dict) -> None:
         """Normalize and dispatch a single message dict (book / price_change / trade / best_bid_ask)."""
@@ -312,6 +367,10 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                     try:
                         self._unknown_sample_logged = False
                         self._unknown_sample = None
+                        self._last_raw_sample = None
+                        self._raw_sample_logged = False
+                        self._last_parse_error_sample = None
+                        self._parse_error_logged = False
                     except Exception:
                         pass
                     telemetry.set_gauge("market_data_ws_connected", 1.0)
@@ -343,13 +402,10 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                                 raw_s = str(raw)
                         except Exception:
                             raw_s = str(raw)
-                        try:
-                            parsed = json.loads(raw_s)
-                        except Exception:
-                            try:
-                                telemetry.incr("market_data_parse_errors_total", 1)
-                            except Exception:
-                                pass
+                        # process raw frame (decoding + parse + samples)
+                        parsed = await self.process_raw(raw)
+                        if parsed is None:
+                            # parse error already recorded inside process_raw
                             continue
 
                         # helper to process dict messages moved into class method _handle_dict_msg
