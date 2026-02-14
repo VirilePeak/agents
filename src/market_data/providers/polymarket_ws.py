@@ -22,6 +22,8 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         self._running = False
         self._subs: set[str] = set()
         self._ws = None
+        # whether we've logged an unknown sample for current connection
+        self._unknown_sample_logged: bool = False
         self._ping_interval = ping_interval
         self._pong_timeout = pong_timeout
 
@@ -142,8 +144,27 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
         Extracted into a method for clarity and testability.
         """
         try:
+            # count every parsed dict for visibility
+            try:
+                telemetry.incr("market_data_parsed_dict_total", 1)
+            except Exception:
+                pass
             etype = m.get("event_type") or m.get("type") or m.get("topic")
             token = m.get("asset_id") or m.get("assetId") or m.get("market") or m.get("asset")
+            # if unknown etype, increment counter and log a sample once per connection
+            if etype not in ("book", "price_change", "last_trade_price"):
+                try:
+                    telemetry.incr("market_data_unknown_etype_total", 1)
+                except Exception:
+                    pass
+                try:
+                    if not getattr(self, "_unknown_sample_logged", False):
+                        keys = list(m.keys())[:20]
+                        sample = json.dumps(m, default=str)[:400]
+                        logger.info("Unknown WS etype sample: etype=%s keys=%s token_guess=%s sample=%s", str(etype), keys, str(token)[:24], sample)
+                        self._unknown_sample_logged = True
+                except Exception:
+                    pass
             # update last-msg timestamp for telemetry (use wall clock)
             try:
                 telemetry.set_last_msg_ts(time.time())
@@ -231,6 +252,11 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                 logger.info("Connecting to Polymarket WS %s", self.url)
                 async with websockets.connect(self.url, ping_interval=self._ping_interval, ping_timeout=self._pong_timeout) as ws:
                     self._ws = ws
+                    # reset per-connection diagnostics
+                    try:
+                        self._unknown_sample_logged = False
+                    except Exception:
+                        pass
                     telemetry.set_gauge("market_data_ws_connected", 1.0)
                     backoff = 1.0
                     # initial handshake subscribe if any (type=market)
