@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.utils.logger import get_logger
+from src.config.settings import get_settings
+from src.market_data.telemetry import telemetry
 
 logger = get_logger(__name__)
 
@@ -293,6 +295,91 @@ class PositionManager:
         trade_id = self.market_locks.get(market_id)
         if trade_id:
             return self.active_trades.get(trade_id)
+        return None
+
+    def get_trade_by_token(self, token_id: str) -> Optional[ActiveTrade]:
+        """Find active trade by token_id."""
+        for trade in self.active_trades.values():
+            if getattr(trade, "token_id", None) == token_id and not trade.exited:
+                return trade
+        return None
+
+    def evaluate_fast_exit(self, trade: ActiveTrade, best_bid: Optional[float], best_ask: Optional[float], now_monotonic: Optional[float] = None) -> Optional[dict]:
+        """
+        Evaluate fast exit rules for a trade given latest market top-of-book.
+        Returns exit decision dict if exiting, else None.
+        """
+        settings = get_settings()
+        now = now_monotonic if now_monotonic is not None else time.monotonic()
+        # Determine A/B variant deterministic by token_id
+        variant_enabled = False
+        try:
+            if getattr(settings, "FAST_EXIT_AB_ENABLED", True):
+                import hashlib
+                h = hashlib.sha256(str(trade.token_id).encode()).digest()[0]
+                variant_enabled = (h % 2 == 1)
+        except Exception:
+            variant_enabled = False
+
+        if not variant_enabled:
+            return None
+
+        # compute hold time
+        hold_s = now - float(getattr(trade, "created_at", now))
+
+        min_hold = int(getattr(settings, "FAST_EXIT_MIN_HOLD_S", 10))
+        if hold_s < min_hold:
+            # skip early exit
+            telemetry.incr("fast_exit_skipped_min_hold_total", 1)
+            return None
+
+        # pick current exit price
+        current_price = None
+        side = getattr(trade, "side", "UP")
+        if side == "UP":
+            # to exit a long, take best_bid (what you'd get selling)
+            current_price = best_bid if best_bid is not None else (best_ask or None)
+        else:
+            # for short, exit at best_ask (buy to cover)
+            current_price = best_ask if best_ask is not None else (best_bid or None)
+
+        if current_price is None:
+            return None
+
+        entry_price = float(getattr(trade, "entry_price", 0.0) or 0.0)
+        tp = float(getattr(settings, "FAST_EXIT_TAKE_PROFIT_CENTS", 0.07))
+        sl = float(getattr(settings, "FAST_EXIT_STOP_LOSS_CENTS", 0.10))
+        time_stop = int(getattr(settings, "FAST_EXIT_TIME_STOP_S", 90))
+        max_hold = int(getattr(settings, "FAST_EXIT_MAX_HOLD_S", 120))
+
+        # compute profit relative to entry (absolute cents)
+        pnl_move = (current_price - entry_price) if side == "UP" else (entry_price - current_price)
+
+        # Take profit
+        if pnl_move >= tp:
+            telemetry.incr("fast_exit_tp_total", 1)
+            # perform exit
+            res = self.exit_trade(trade.trade_id, current_price, "fast_tp", exit_request_id=f"fast_tp_{int(now*1000)}")
+            return {"action": "exit", "reason": "tp", "res": res}
+
+        # Stop loss (hard)
+        if pnl_move <= -sl:
+            telemetry.incr("fast_exit_sl_total", 1)
+            res = self.exit_trade(trade.trade_id, current_price, "fast_sl", exit_request_id=f"fast_sl_{int(now*1000)}")
+            return {"action": "exit", "reason": "sl", "res": res}
+
+        # Time stop
+        if hold_s >= time_stop and (trade.unrealized_pnl is None or trade.unrealized_pnl <= 0):
+            telemetry.incr("fast_exit_time_stop_total", 1)
+            res = self.exit_trade(trade.trade_id, current_price, "fast_time_stop", exit_request_id=f"fast_time_{int(now*1000)}")
+            return {"action": "exit", "reason": "time_stop", "res": res}
+
+        # Max hold
+        if hold_s >= max_hold:
+            telemetry.incr("fast_exit_max_hold_total", 1)
+            res = self.exit_trade(trade.trade_id, current_price, "fast_max_hold", exit_request_id=f"fast_max_{int(now*1000)}")
+            return {"action": "exit", "reason": "max_hold", "res": res}
+
         return None
     
     def check_timeout(self, trade_id: str) -> bool:

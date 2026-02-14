@@ -167,6 +167,15 @@ class Settings:
     MIN_EDGE_CENTS: Optional[float] = None
     MAX_SPREAD_PCT: Optional[float] = None
     ENTRY_FILTERS_AB_ENABLED: bool = True
+    # FastExit settings (A/B)
+    FAST_EXIT_AB_ENABLED: bool = True
+    FAST_EXIT_TIME_STOP_S: int = 90
+    FAST_EXIT_STOP_LOSS_CENTS: float = 0.10
+    FAST_EXIT_TAKE_PROFIT_CENTS: float = 0.07
+    FAST_EXIT_MIN_HOLD_S: int = 10
+    FAST_EXIT_MAX_HOLD_S: int = 120
+    POSITION_RISK_PCT_PER_TRADE: float = 0.02
+    MAX_TOTAL_EXPOSURE_PCT: float = 0.10
 
 
 _settings: Optional[Settings] = None

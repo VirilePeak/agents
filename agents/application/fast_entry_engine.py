@@ -711,6 +711,16 @@ class FastEntryEngine:
                     self._update_price_history(update.token_id, snapshot)
                     self.stats["price_updates"] += 1
                     
+                    # Fast-exit evaluation for existing trades on this token
+                    try:
+                        trade = self.position_manager.get_trade_by_token(update.token_id)
+                        if trade:
+                            now_mon = self._monotonic_ms()/1000.0
+                            # call evaluate_fast_exit with best_bid/best_ask
+                            self.position_manager.evaluate_fast_exit(trade, snapshot.best_bid, snapshot.best_ask, now_monotonic=time.monotonic())
+                    except Exception:
+                        logger.debug("fast_exit evaluation failed for token %s", update.token_id[:8])
+
                     # Check for dislocation
                     signal = self._detect_dislocation(update.token_id)
                     if signal:
