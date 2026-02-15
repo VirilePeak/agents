@@ -4029,18 +4029,37 @@ def webhook(payload: WebhookPayload):
                                                 try:
                                                     for tk in clob:
                                                         tk_s = str(tk)
-                                                        # schedule subscribe non-blocking
-                                                        if _market_data_adapter and getattr(_market_data_adapter, "subscribe", None):
-                                                            try:
-                                                                loop = asyncio.get_running_loop()
-                                                                loop.create_task(_market_data_adapter.subscribe(tk_s))
-                                                            except RuntimeError:
-                                                                import threading
-                                                                threading.Thread(target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(tk_s))).start()
-                                                            logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled for pending confirmation token {str(tk_s)[:18]}...")
-                                                            # debug instrumentation H2
-                                                            _dbg_log("H2", "webhook_server_fastapi:subscribe_scheduled", "subscribe_scheduled_for_pending_confirmation", {"request_id": request_id, "token": str(tk_s)})
-                                                        # add to keepalive map
+                                                        # schedule subscribe non-blocking via app.state.market_data_adapter if available
+                                                        try:
+                                                            adapter = getattr(app.state, "market_data_adapter", None)
+                                                        except Exception:
+                                                            adapter = None
+                                                        try:
+                                                            already_subscribed = False
+                                                            if adapter is not None:
+                                                                subs = getattr(adapter, "_subs", None)
+                                                                if subs and tk_s in subs:
+                                                                    already_subscribed = True
+                                                            if adapter is not None and getattr(adapter, "subscribe", None) and not already_subscribed:
+                                                                try:
+                                                                    loop = asyncio.get_running_loop()
+                                                                    loop.create_task(adapter.subscribe(tk_s))
+                                                                    logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled for pending confirmation token {str(tk_s)[:18]}...")
+                                                                    _dbg_log("H2a", "webhook_server_fastapi:pending_confirmation", "subscribe_task_created", {"request_id": request_id, "token": tk_s})
+                                                                except RuntimeError:
+                                                                    import threading
+                                                                    threading.Thread(target=lambda: __import__("asyncio").run(adapter.subscribe(tk_s))).start()
+                                                                    logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled (thread) for pending confirmation token {str(tk_s)[:18]}...")
+                                                                    _dbg_log("H2a", "webhook_server_fastapi:pending_confirmation", "subscribe_task_created_thread", {"request_id": request_id, "token": tk_s})
+                                                            else:
+                                                                if already_subscribed:
+                                                                    logger.debug(f"[{request_id}] token {tk_s} already subscribed, skipping subscribe request")
+                                                                else:
+                                                                    logger.debug(f"[{request_id}] MarketDataAdapter unavailable, deferring subscribe for token {tk_s}")
+                                                        except Exception as e:
+                                                            logger.exception(f"[{request_id}] error scheduling subscribe for pending confirmation token {tk_s}: {e}")
+                                                            _dbg_log("H2b", "webhook_server_fastapi:pending_confirmation", "subscribe_task_failed", {"request_id": request_id, "token": tk_s, "error": str(e)})
+                                                        # always add to keepalive map (so reconcile sees desired refcount)
                                                         try:
                                                             from src.config.settings import get_settings as _get_s
                                                             _s = _get_s()
