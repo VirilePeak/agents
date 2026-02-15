@@ -42,6 +42,20 @@ setup_logging(settings)
 logger = get_logger(__name__)
 from src.market_data.telemetry import telemetry as _md_telemetry
 
+#region debug_instrumentation
+try:
+    from src.debug.ndjson_logger import dbg_log as _nd_dbg_log
+except Exception:
+    _nd_dbg_log = None
+
+def _dbg_log(hypothesisId: str, location: str, message: str, data: dict = None):
+    try:
+        if _nd_dbg_log is not None:
+            _nd_dbg_log(hypothesisId, location, message, data, run_id="debug_run_1")
+    except Exception:
+        pass
+#endregion
+
 
 def _update_subs_gauge():
     """
@@ -3990,6 +4004,8 @@ def webhook(payload: WebhookPayload):
                                 status = result.get("status")
                                 if status == "pending":
                                     logger.info(f"[{request_id}] confirmation_pending: key={conf_key} delay={getattr(settings, 'CONFIRMATION_DELAY_SECONDS', 60)}s ttl={getattr(settings, 'CONFIRMATION_TTL_SECONDS', 180)}s")
+                                    # debug instrumentation H1
+                                    _dbg_log("H1", "webhook_server_fastapi:confirmation_pending", "confirmation_pending_created", {"request_id": request_id, "conf_key": conf_key, "sig_id": sig_id})
                                     # Best-effort: derive market slug and subscribe to tokens while confirmation pending
                                     try:
                                         from src.market_discovery.btc_updown import derive_btc_updown_slug_from_signal_id, derive_btc_updown_slug_from_payload
@@ -4022,6 +4038,8 @@ def webhook(payload: WebhookPayload):
                                                                 import threading
                                                                 threading.Thread(target=lambda: __import__("asyncio").run(_market_data_adapter.subscribe(tk_s))).start()
                                                             logger.info(f"[{request_id}] MarketDataAdapter subscribe scheduled for pending confirmation token {str(tk_s)[:18]}...")
+                                                            # debug instrumentation H2
+                                                            _dbg_log("H2", "webhook_server_fastapi:subscribe_scheduled", "subscribe_scheduled_for_pending_confirmation", {"request_id": request_id, "token": str(tk_s)})
                                                         # add to keepalive map
                                                         try:
                                                             from src.config.settings import get_settings as _get_s
@@ -4053,6 +4071,8 @@ def webhook(payload: WebhookPayload):
                                 # confirmed -> continue pipeline
                                 if status == "confirmed":
                                     logger.info(f"[{request_id}] confirmation_passed: key={conf_key}")
+                                    # debug instrumentation H3
+                                    _dbg_log("H3", "webhook_server_fastapi:confirmation_passed", "confirmation_passed", {"request_id": request_id, "conf_key": conf_key, "sig_id": sig_id})
                                     # remember confirmed key for potential cleanup if later blocked
                                     confirmed_conf_key = conf_key
                             except Exception:
@@ -4993,6 +5013,11 @@ def webhook(payload: WebhookPayload):
             append_jsonl(settings.PAPER_LOG_PATH, would_order)
             logger.info(f"[{request_id}] PAPER LOGGED TO: {settings.PAPER_LOG_PATH}")
             logger.debug(f"[{request_id}] PAPER ORDER: {would_order}")
+            # debug instrumentation H4 - paper trade logged
+            try:
+                _dbg_log("H4", "webhook_server_fastapi:paper_logged", "paper_trade_logged", {"request_id": request_id, "trade_id": would_order.get("trade_id"), "signal_id": would_order.get("signal_id")})
+            except Exception:
+                pass
             
             # Log decision for Phase-2 analysis (trade opened successfully)
             log_decision(

@@ -130,6 +130,9 @@ class Settings:
     BTC_UPDOWN_AUTO_CLOSE_BUFFER_SECONDS: int = 15
     # Feature flag: request best_bid_ask enrichment from provider if available
     MARKET_DATA_CUSTOM_FEATURE_ENABLED: bool = True
+    # Debug NDJSON logging for runtime debug sessions (writes NDJSON to DEBUG_NDJSON_LOG_PATH when enabled)
+    DEBUG_NDJSON_LOG: bool = False
+    DEBUG_NDJSON_LOG_PATH: str = str(Path.cwd() / ".cursor" / "debug.log")
     # Entry / Risk Gates (conservative defaults)
     MAX_ENTRY_SPREAD: float = 0.05
     HARD_REJECT_SPREAD: float = 0.30
@@ -258,6 +261,8 @@ def _load_from_env(settings: Settings) -> None:
     set_if("REQUIRE_CONFIRMATION", lambda v: parse_bool(v, settings.REQUIRE_CONFIRMATION))
     set_if("CONFIRMATION_DELAY_SECONDS", lambda v: parse_int(v, settings.CONFIRMATION_DELAY_SECONDS))
     set_if("CONFIRMATION_TTL_SECONDS", lambda v: parse_int(v, settings.CONFIRMATION_TTL_SECONDS))
+    set_if("DEBUG_NDJSON_LOG", lambda v: parse_bool(v, settings.DEBUG_NDJSON_LOG))
+    set_if("DEBUG_NDJSON_LOG_PATH", str)
     set_if("MAX_SPREAD_ENTRY", lambda v: parse_float(v, settings.MAX_SPREAD_ENTRY))
     set_if("MIN_ASK_SIZE", lambda v: parse_float(v, settings.MIN_ASK_SIZE))
     set_if("ENFORCE_DEPTH", lambda v: parse_bool(v, settings.ENFORCE_DEPTH))
