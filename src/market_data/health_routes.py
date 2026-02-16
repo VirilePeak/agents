@@ -197,11 +197,9 @@ def register(app: FastAPI) -> None:
             # perform subscribe if requested and adapter available via app.state or module globals
             adapter_subscribed = False
             try:
-                adapter = getattr(request.app.state, "market_data_adapter", None)
-                # fallback to module-level globals if state not set (for tests and legacy compatibility)
-                if adapter is None:
-                    import webhook_server_fastapi as ws  # type: ignore
-                    adapter = getattr(ws, "_market_data_adapter", None)
+                # Import helper from webhook_server_fastapi
+                import webhook_server_fastapi as ws  # type: ignore
+                adapter = ws._get_market_data_adapter(request.app)
                 if adapter is None:
                     notes.append("adapter_unavailable")
                 else:
