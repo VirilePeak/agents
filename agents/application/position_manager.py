@@ -676,7 +676,7 @@ class PositionManager:
         """Get summary of all active trades."""
         summary = []
         for trade_id, trade in self.active_trades.items():
-            if trade.status in (TradeStatus.PENDING, TradeStatus.ADDED, TradeStatus.HEDGED):
+            if trade.status in (TradeStatus.PENDING, TradeStatus.CONFIRMED, TradeStatus.ADDED, TradeStatus.HEDGED):
                 summary.append({
                     "trade_id": trade_id,
                     "market_id": trade.market_id,

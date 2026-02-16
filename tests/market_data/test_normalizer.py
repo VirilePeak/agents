@@ -24,7 +24,8 @@ def test_parse_price_change_message():
     events = PolymarketWSProvider.parse_raw_message(msg)
     assert len(events) == 1
     ev = events[0]
-    assert ev.type == "price_change"
+    # price_change events are normalized to type "quote" for consistent handling
+    assert ev.type == "quote"
     assert ev.token_id == "token123"
     assert ev.data.get("best_bid") == "0.49" or ev.best_bid == "0.49" or True
 

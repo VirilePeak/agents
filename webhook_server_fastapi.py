@@ -602,9 +602,10 @@ async def startup_event():
         rehydrated_count = rehydrate_paper_trades()
         if rehydrated_count > 0:
             logger.info(f"Rehydrated {rehydrated_count} active paper trades into PositionManager")
-        cleaned_file_orphans = cleanup_orphan_paper_trades()
-        if cleaned_file_orphans > 0:
-            logger.warning(f"ORPHAN FILE CLEANUP: Closed {cleaned_file_orphans} trades on startup")
+        # NOTE: cleanup_orphan_paper_trades is NOT called here on purpose.
+        # The orphan_file_cleanup_task background task will handle file-only orphans
+        # after a delay, giving pending confirmations time to complete.
+        # This prevents trades in confirmation-delay from being immediately closed on startup.
     
     # Orphan Cleanup Task (closes old open trades)
     async def orphan_cleanup_task():
@@ -738,17 +739,27 @@ async def startup_event():
             logger.debug("Orphan file cleanup task disabled")
             return
 
+        # Initial delay to allow pending confirmations to complete after startup
+        # This prevents trades in confirmation-delay from being closed immediately
+        initial_delay = getattr(settings, "CONFIRMATION_DELAY_SECONDS", 60) + 30  # confirmation delay + buffer
+        logger.info(f"Orphan file cleanup task: waiting {initial_delay}s for initial delay before first cleanup")
+        await asyncio.sleep(initial_delay)
+        
         poll_interval = 120.0  # Check every 2 minutes
         while True:
             try:
-                await asyncio.sleep(poll_interval)
                 if not is_paper_trading():
+                    await asyncio.sleep(poll_interval)
                     continue
-                cleanup_orphan_paper_trades()
+                cleaned = cleanup_orphan_paper_trades()
+                if cleaned > 0:
+                    logger.warning(f"ORPHAN FILE CLEANUP: Closed {cleaned} file-only orphan trades")
+                await asyncio.sleep(poll_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Orphan file cleanup task error: {e}")
+                await asyncio.sleep(poll_interval)
 
         # Start orphan cleanup task
         if settings.ORPHAN_CLEANUP_ENABLED:

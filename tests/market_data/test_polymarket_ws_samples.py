@@ -33,7 +33,7 @@ def test_raw_sample_set_and_unknown_sample_from_dict_payload():
     assert p.get_unknown_sample() is not None
 
 
-def test_admin_endpoint_returns_samples():
+def test_admin_endpoint_returns_samples(monkeypatch):
     app = FastAPI()
     health_routes.register(app)
 
@@ -50,11 +50,23 @@ def test_admin_endpoint_returns_samples():
 
     app.state.market_data_adapter = FakeAdapter()
 
-    import os
-    os.environ["DEBUG_ENDPOINTS_ENABLED"] = "1"
+    # Patch settings directly instead of relying on environment variables
+    import src.config.settings as _s
+    
+    def get_test_settings():
+        settings = _s.Settings()
+        settings.DEBUG_ENDPOINTS_ENABLED = True
+        settings.DEBUG_ENDPOINTS_TOKEN = "test-token"
+        return settings
+    
+    monkeypatch.setattr(_s, "get_settings", get_test_settings)
+    monkeypatch.setattr(_s, "_settings", get_test_settings())
+    
     client = TestClient(app)
     # enable debug endpoints by patching settings via environment - but health route doesn't require it here
-    r = client.post("/market-data/admin/discover-subscribe", json={"timeframe_minutes": 5, "dry_run": True})
+    r = client.post("/market-data/admin/discover-subscribe", 
+                    headers={"X-Debug-Token": "test-token"},
+                    json={"timeframe_minutes": 5, "dry_run": True})
     assert r.status_code == 200
     j = r.json()
     # unknown_sample, raw_sample, parse_error_sample keys should be present (may be None)

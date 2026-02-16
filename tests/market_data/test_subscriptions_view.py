@@ -23,12 +23,21 @@ def test_subscriptions_view_reports_tokens(monkeypatch):
     state = ReconcileState()
     state.missing_count["T2"] = 1
     ws._market_data_reconcile_state = state
-    # enable debug endpoints for test
+    
+    # Patch settings directly using monkeypatch
     import src.config.settings as _s
-    _s.get_settings().DEBUG_ENDPOINTS_ENABLED = True
+    
+    def get_test_settings():
+        settings = _s.Settings()
+        settings.DEBUG_ENDPOINTS_ENABLED = True
+        settings.DEBUG_ENDPOINTS_TOKEN = "test-token"
+        return settings
+    
+    monkeypatch.setattr(_s, "get_settings", get_test_settings)
+    monkeypatch.setattr(_s, "_settings", get_test_settings())
 
     with TestClient(app) as client:
-        r = client.get("/market-data/subscriptions")
+        r = client.get("/market-data/subscriptions", headers={"X-Debug-Token": "test-token"})
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
