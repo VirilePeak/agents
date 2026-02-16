@@ -1,0 +1,334 @@
+{
+  "name": "AlphaClaw - News & Trend Edge Detector",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "name": "Check Every 15min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [-800, 200]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "searchTerm": "crypto OR bitcoin OR ethereum OR solana OR altcoin",
+        "resultCount": 20,
+        "lang": "en"
+      },
+      "name": "X - Crypto Search",
+      "type": "n8n-nodes-base.twitter",
+      "typeVersion": 2,
+      "position": [-600, 100],
+      "credentials": {
+        "twitterOAuth2Api": {
+          "id": "YOUR_TWITTER_CRED_ID",
+          "name": "X account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "searchTerm": "breaking OR news OR announcement OR partnership",
+        "resultCount": 20,
+        "lang": "en"
+      },
+      "name": "X - Breaking News",
+      "type": "n8n-nodes-base.twitter",
+      "typeVersion": 2,
+      "position": [-600, 300],
+      "credentials": {
+        "twitterOAuth2Api": {
+          "id": "YOUR_TWITTER_CRED_ID",
+          "name": "X account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "subreddit": "cryptocurrency+CryptoMarkets+defi+NFTs",
+        "sort": "new",
+        "limit": 25
+      },
+      "name": "Reddit - New Posts",
+      "type": "n8n-nodes-base.reddit",
+      "typeVersion": 2,
+      "position": [-400, 500]
+    },
+    {
+      "parameters": {
+        "subreddit": "wallstreetbets+stocks+investing",
+        "sort": "hot",
+        "limit": 15
+      },
+      "name": "Reddit - Market Sentiment",
+      "type": "n8n-nodes-base.reddit",
+      "typeVersion": 2,
+      "position": [-400, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate and score content\nconst seen = new Set();\nconst scored = [];\n\nfor (const item of $input.all()) {\n  const text = item.json.text || item.json.title || item.json.body || '';\n  const id = item.json.id || Math.random().toString();\n  \n  if (seen.has(id)) continue;\n  seen.add(id);\n  \n  // Scoring algorithm\n  let score = 0;\n  const text_lower = text.toLowerCase();\n  \n  // Engagement signals\n  const likes = item.json.favorite_count || item.json.ups || item.json.score || 0;\n  const replies = item.json.reply_count || item.json.num_comments || 0;\n  score += likes * 2 + replies * 5;\n  \n  // Early signals (high value)\n  if (text_lower.includes('partnership')) score += 100;\n  if (text_lower.includes('listing')) score += 80;\n  if (text_lower.includes('airdrop')) score += 60;\n  if (text_lower.includes('announcement')) score += 50;\n  if (text_lower.includes('launch')) score += 40;\n  if (text_lower.includes('beta')) score += 30;\n  if (text_lower.includes('testnet')) score += 25;\n  \n  // Risk signals (penalty)\n  if (text_lower.includes('scam')) score -= 200;\n  if (text_lower.includes('rug')) score -= 200;\n  if (text_lower.includes('pump')) score -= 50;\n  \n  // Time decay - newer = better\n  const created = new Date(item.json.created_at || item.json.created_utc * 1000 || Date.now());\n  const age_minutes = (Date.now() - created) / 60000;\n  if (age_minutes < 30) score += 50;\n  else if (age_minutes < 60) score += 30;\n  else if (age_minutes < 120) score += 10;\n  \n  scored.push({\n    json: {\n      ...item.json,\n      edge_score: score,\n      source: item.json.source || 'unknown',\n      age_minutes: Math.round(age_minutes)\n    }\n  });\n}\n\n// Sort by score descending\nscored.sort((a, b) => b.json.edge_score - a.json.edge_score);\n\n// Return top 10\nreturn scored.slice(0, 10);"
+      },
+      "name": "Score & Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, 300]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Analyze this content for early investment/trading opportunities:\n\nSource: {{ $json.source }}\nText: {{ $json.text || $json.title }}\nScore: {{ $json.edge_score }}\nAge: {{ $json.age_minutes }} minutes\n\nProvide:\n1. Opportunity type (airdrop, listing, partnership, narrative, etc.)\n2. Confidence (1-10)\n3. Action recommendation\n4. Risk level (low/medium/high)\n5. Why this matters NOW",
+              "role": "user"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {}
+      },
+      "name": "AI Analysis",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "edge-high",
+              "operator": {
+                "name": "filter.operator.gt",
+                "type": "number",
+                "operation": "gt"
+              },
+              "leftValue": "={{ $json.edge_score }}",
+              "rightValue": "100"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "High Edge Score?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "mode": "list"
+        },
+        "text": "=🚨 *HIGH EDGE ALERT* 🚨\n\n*Source:* {{ $json.source }}\n*Score:* {{ $json.edge_score }}\n*Confidence:* {{ $json.output.confidence }}/10\n*Opportunity:* {{ $json.output.opportunity_type }}\n*Action:* {{ $json.output.action_recommendation }}\n*Risk:* {{ $json.output.risk_level }}\n\n*Content:*\n{{ $json.text || $json.title }}\n\n*Why Now:* {{ $json.output.why_now }}\n\n*Link:* {{ $json.url || $json.permalink }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false,
+          "mrkdwn": true
+        }
+      },
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [400, 200]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "table": "edge_alerts",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldName": "timestamp",
+              "fieldValue": "={{ DateTime.now() }}"
+            },
+            {
+              "fieldName": "source",
+              "fieldValue": "={{ $json.source }}"
+            },
+            {
+              "fieldName": "content",
+              "fieldValue": "={{ $json.text || $json.title }}"
+            },
+            {
+              "fieldName": "edge_score",
+              "fieldValue": "={{ $json.edge_score }}"
+            },
+            {
+              "fieldName": "confidence",
+              "fieldValue": "={{ $json.output.confidence }}"
+            },
+            {
+              "fieldName": "opportunity_type",
+              "fieldValue": "={{ $json.output.opportunity_type }}"
+            },
+            {
+              "fieldName": "action",
+              "fieldValue": "={{ $json.output.action_recommendation }}"
+            },
+            {
+              "fieldName": "risk_level",
+              "fieldValue": "={{ $json.output.risk_level }}"
+            },
+            {
+              "fieldName": "url",
+              "fieldValue": "={{ $json.url || $json.permalink }}"
+            }
+          ]
+        }
+      },
+      "name": "Save to DB",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "content": "## AlphaClaw Edge Detector\nMonitors X and Reddit for early signals\n",
+        "height": 200,
+        "width": 400,
+        "color": 3
+      },
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [-800, 0]
+    }
+  ],
+  "connections": {
+    "Check Every 15min": {
+      "main": [
+        [
+          {
+            "node": "X - Crypto Search",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "X - Breaking News",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Reddit - New Posts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Reddit - Market Sentiment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "X - Crypto Search": {
+      "main": [
+        [
+          {
+            "node": "Score & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "X - Breaking News": {
+      "main": [
+        [
+          {
+            "node": "Score & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reddit - New Posts": {
+      "main": [
+        [
+          {
+            "node": "Score & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reddit - Market Sentiment": {
+      "main": [
+        [
+          {
+            "node": "Score & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score & Filter": {
+      "main": [
+        [
+          {
+            "node": "AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Analysis": {
+      "main": [
+        [
+          {
+            "node": "High Edge Score?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Edge Score?": {
+      "main": [
+        [
+          {
+            "node": "Send Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

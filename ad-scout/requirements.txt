@@ -1,0 +1,17 @@
+# Ad-Scout Requirements
+
+# Database
+sqlite3
+
+# Web Scraping
+playwright
+
+# Google Drive API
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# Utilities
+requests
+python-dotenv

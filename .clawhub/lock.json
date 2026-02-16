@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "skills": {
+    "github-cli": {
+      "version": "1.0.0",
+      "installedAt": 1771245156859
+    },
+    "sonoscli": {
+      "version": "1.0.0",
+      "installedAt": 1771277074196
+    }
+  }
+}
