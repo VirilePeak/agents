@@ -23,12 +23,13 @@ class FakePolymarket:
         return "order123"
 
 
+from src.utils.ab_router import ab_bucket
+
 def find_variant_token(desired_variant=1):
-    # find a token string that maps to desired variant using sha256 lowest byte %2
+    # find a token string that maps to desired variant using ab_bucket
     for i in range(10000):
         tok = f"tok_{i}"
-        h = hashlib.sha256(tok.encode()).digest()[0]
-        if (h % 2) == desired_variant:
+        if ab_bucket(tok) == desired_variant:
             return tok
     return "tok_default"
 

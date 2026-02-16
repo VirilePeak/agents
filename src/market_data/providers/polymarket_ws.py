@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import asyncio
 import json
 import logging
@@ -383,13 +383,41 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
                 changes = payload.get("price_changes") or payload.get("priceChanges") or []
                 for pc in changes:
                     token_id = str(pc.get("asset_id") or pc.get("assetId") or token)
+                    # parse numeric fields from price_change -> treat as quote
+
+                    def _f(v):
+
+                        try:
+
+                            return float(v) if v is not None and v != "" else None
+
+                        except Exception:
+
+                            return None
+
+                    best_bid_f = _f(pc.get("best_bid") or pc.get("bestBid"))
+
+                    best_ask_f = _f(pc.get("best_ask") or pc.get("bestAsk"))
+
+                    spread_pct = None
+
+                    try:
+
+                        if best_bid_f is not None and best_ask_f is not None and best_ask_f > 0:
+
+                            spread_pct = (best_ask_f - best_bid_f) / best_ask_f
+
+                    except Exception:
+
+                        spread_pct = None
+
                     ev = MarketEvent(
                         ts=float(payload.get("timestamp") or m.get("timestamp") or 0) / 1000.0 if (payload.get("timestamp") or m.get("timestamp")) else float(asyncio.get_event_loop().time()),
-                        type="price_change",
+                        type="quote",
                         token_id=token_id,
-                        best_bid=pc.get("best_bid"),
-                        best_ask=pc.get("best_ask"),
-                        spread_pct=None,
+                        best_bid=best_bid_f,
+                        best_ask=best_ask_f,
+                        spread_pct=spread_pct,
                         data=pc,
                     )
                     try:
@@ -541,11 +569,13 @@ class PolymarketWSProvider(AbstractMarketDataProvider):
             changes = msg.get("price_changes") or msg.get("priceChanges") or []
             for pc in changes:
                 token_id = str(pc.get("asset_id") or pc.get("assetId") or "")
-                ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else time.time(), type="price_change", token_id=token_id, best_bid=pc.get("best_bid"), best_ask=pc.get("best_ask"), spread_pct=None, data=pc)
+                ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else time.time(), type="quote", token_id=token_id, best_bid=(float(pc.get("best_bid")) if pc.get("best_bid") is not None else None), best_ask=(float(pc.get("best_ask")) if pc.get("best_ask") is not None else None), spread_pct=None, data=pc)
                 events.append(ev)
         elif etype == "last_trade_price":
             token_id = str(msg.get("asset_id") or "")
             ev = MarketEvent(ts=float(msg.get("timestamp") or 0)/1000.0 if msg.get("timestamp") else time.time(), type="trade", token_id=token_id, best_bid=None, best_ask=None, spread_pct=None, data=msg)
             events.append(ev)
         return events
+
+
 

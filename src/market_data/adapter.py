@@ -136,15 +136,28 @@ class MarketDataAdapter:
                 logger.exception("failed to schedule event handling")
 
     async def _handle_event(self, ev: MarketEvent) -> None:
-        # update cache for book/price_change/trade if applicable
+        # update cache for book/quote/trade if applicable
         try:
             if ev.type == "book":
-                # build a lightweight snapshot from ev.data if present
                 raw = ev.data or {}
-                snapshot = OrderBookSnapshot.from_raw(ev.token_id, raw, source="ws")
+                snapshot = OrderBookSnapshot.from_raw(ev.token_id, raw, source="ws_book")
                 self.cache.update(snapshot)
-            # publish event to bus
+
+            elif ev.type == "quote":
+                # quote/price_change has best_bid/best_ask -> store in cache as top-of-book snapshot
+                raw = ev.data or {}
+                raw_ob = {
+                    "bids": [],
+                    "asks": [],
+                    "best_bid": ev.best_bid,
+                    "best_ask": ev.best_ask,
+                    "best_bid_size": getattr(ev, "best_bid_size", None),
+                    "best_ask_size": getattr(ev, "best_ask_size", None),
+                    "timestamp": (raw.get("timestamp") if isinstance(raw, dict) else None),
+                }
+                snapshot = OrderBookSnapshot.from_raw(ev.token_id, raw_ob, source="ws_quote")
+                self.cache.update(snapshot)
+
             await self.event_bus.publish(ev)
         except Exception:
             logger.exception("error handling provider event")
-

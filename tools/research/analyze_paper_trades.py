@@ -15,9 +15,78 @@ import math
 import argparse
 from src.utils.ab_router import ab_bucket, ab_variant
 
+# Expanded AB key candidates and list fallbacks
+AB_KEYS_DEFAULT = [
+    "routing_key_used", "routing_key", "router_key", "ab_key",
+    "token_id", "tokenId", "clob_token_id", "clobTokenId",
+    "outcome_token_id", "outcomeTokenId",
+    "yes_token_id", "no_token_id",
+    "token", "tokenId",
+    "asset_id", "assetId",
+    "market_id", "marketId",
+    "signal_id", "signalId",
+]
+
+LIST_KEY_FALLBACKS = [
+    "clob_token_ids", "clobTokenIds",
+    "token_ids", "tokenIds",
+    "outcome_token_ids", "outcomeTokenIds",
+]
+
+
+def _norm_key(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str) and v.strip() == "":
+        return None
+    return v
+
+
+def deep_find_first(obj, keys):
+    """Recursively search for the first occurrence of any key in keys within nested dict/list."""
+    if isinstance(obj, dict):
+        for k in keys:
+            if k in obj:
+                v = _norm_key(obj.get(k))
+                if v is not None:
+                    return v
+        for v in obj.values():
+            hit = deep_find_first(v, keys)
+            if hit is not None:
+                return hit
+    elif isinstance(obj, list):
+        for it in obj:
+            hit = deep_find_first(it, keys)
+            if hit is not None:
+                return hit
+    return None
+
+
+def find_ab_key(trade: Dict[str, Any], priority_keys: List[str]) -> Optional[str]:
+    # 1) deep search using provided priority_keys
+    k = deep_find_first(trade, priority_keys)
+    if k is not None:
+        return k
+    # 2) try expanded defaults
+    k = deep_find_first(trade, AB_KEYS_DEFAULT)
+    if k is not None:
+        return k
+    # 3) list fallbacks e.g. clob_token_ids etc.
+    if isinstance(trade, dict):
+        for lk in LIST_KEY_FALLBACKS:
+            v = trade.get(lk)
+            if isinstance(v, list) and len(v) > 0:
+                vv = _norm_key(v[0])
+                if vv is not None:
+                    return vv
+    return None
+
 
 def load_closed_trades(paths: List[str]) -> List[Dict[str, Any]]:
-    trades = []
+    # Read all lines and merge records by trade_id so we have a combined view
+    trades_by_id: Dict[str, Dict[str, Any]] = {}
     for p in paths:
         try:
             with open(p, "r", encoding="utf-8") as fh:
@@ -29,11 +98,19 @@ def load_closed_trades(paths: List[str]) -> List[Dict[str, Any]]:
                         obj = json.loads(line)
                     except Exception:
                         continue
-                    if "realized_pnl" in obj:
-                        trades.append(obj)
+                    tid = obj.get("trade_id") or obj.get("id") or None
+                    if not tid:
+                        # skip records without a trade_id
+                        continue
+                    existing = trades_by_id.get(tid, {})
+                    # merge: update existing with new keys (new keys overwrite)
+                    merged = existing.copy()
+                    merged.update(obj)
+                    trades_by_id[tid] = merged
         except Exception:
             continue
-    return trades
+    # return only those trades that have realized_pnl (i.e., closed trades)
+    return [v for v in trades_by_id.values() if "realized_pnl" in v]
 
 
 def summary_stats(trades: List[Dict[str, Any]]):
@@ -197,9 +274,10 @@ def analyze_trades(trades: List[Dict[str, Any]], split_ab: bool = False, ab_key_
         return out
 
     def pick_key(t: Dict[str, Any]) -> Optional[str]:
-        for k in ab_key_priority:
-            if k in t and t.get(k):
-                return str(t.get(k))
+        # try user-priority keys first (deep search), then fall back to expanded candidates
+        k = find_ab_key(t, ab_key_priority)
+        if k is not None:
+            return k
         return None
 
     groups = {"control": [], "variant": [], "unknown": []}
