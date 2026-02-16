@@ -17,91 +17,72 @@ class MarketQualityGate:
         self.min_ask_size = min_ask_size
         self.max_spread = max_spread
 
-def _extract_best(self, orderbook: Any) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    best_bid = None
-    best_ask = None
-    best_ask_size = None
+    def _extract_best(self, orderbook: Any) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        best_bid = None
+        best_ask = None
+        best_ask_size = None
 
-    # 1) normal orderbook levels
-    bids = getattr(orderbook, "bids", None) or (orderbook.get("bids", []) if isinstance(orderbook, dict) else [])
-    asks = getattr(orderbook, "asks", None) or (orderbook.get("asks", []) if isinstance(orderbook, dict) else [])
+        # 1) normal orderbook levels
+        bids = getattr(orderbook, "bids", None) or (orderbook.get("bids", []) if isinstance(orderbook, dict) else [])
+        asks = getattr(orderbook, "asks", None) or (orderbook.get("asks", []) if isinstance(orderbook, dict) else [])
 
-    if bids:
-        b0 = bids[0]
-        v = getattr(b0, "price", None) or (b0.get("price") if isinstance(b0, dict) else None)
-        if v is not None:
-            best_bid = float(v)
+        if bids:
+            b0 = bids[0]
+            v = getattr(b0, "price", None) or (b0.get("price") if isinstance(b0, dict) else None)
+            if v is not None:
+                best_bid = float(v)
 
-    if asks:
-        a0 = asks[0]
-        v = getattr(a0, "price", None) or (a0.get("price") if isinstance(a0, dict) else None)
-        if v is not None:
-            best_ask = float(v)
+        if asks:
+            a0 = asks[0]
+            v = getattr(a0, "price", None) or (a0.get("price") if isinstance(a0, dict) else None)
+            if v is not None:
+                best_ask = float(v)
 
-        sz = getattr(a0, "size", None) or (a0.get("size") if isinstance(a0, dict) else None)
-        if sz is not None:
-            best_ask_size = float(sz)
+            sz = getattr(a0, "size", None) or (a0.get("size") if isinstance(a0, dict) else None)
+            if sz is not None:
+                best_ask_size = float(sz)
 
-    # 2) fallback: top-of-book fields (from quote/price_change enrichment)
-    if best_bid is None:
-        v = getattr(orderbook, "best_bid", None)
-        if v is None and isinstance(orderbook, dict):
-            v = orderbook.get("best_bid")
-        if v is not None:
-            best_bid = float(v)
+        # 2) fallback: top-of-book fields (from quote/price_change enrichment)
+        if best_bid is None:
+            v = getattr(orderbook, "best_bid", None)
+            if v is None and isinstance(orderbook, dict):
+                v = orderbook.get("best_bid")
+            if v is not None:
+                best_bid = float(v)
 
-    if best_ask is None:
-        v = getattr(orderbook, "best_ask", None)
-        if v is None and isinstance(orderbook, dict):
-            v = orderbook.get("best_ask")
-        if v is not None:
-            best_ask = float(v)
+        if best_ask is None:
+            v = getattr(orderbook, "best_ask", None)
+            if v is None and isinstance(orderbook, dict):
+                v = orderbook.get("best_ask")
+            if v is not None:
+                best_ask = float(v)
 
-    if best_ask_size is None:
-        v = getattr(orderbook, "best_ask_size", None)
-        if v is None and isinstance(orderbook, dict):
-            v = orderbook.get("best_ask_size")
-        if v is not None:
-            best_ask_size = float(v)
+        if best_ask_size is None:
+            v = getattr(orderbook, "best_ask_size", None)
+            if v is None and isinstance(orderbook, dict):
+                v = orderbook.get("best_ask_size")
+            if v is not None:
+                best_ask_size = float(v)
 
-    return best_bid, best_ask, best_ask_size
+        return best_bid, best_ask, best_ask_size
 
-    best_ask = None
-    best_ask_size = None
+    def check(self, orderbook: Any) -> QualityResult:
+        """Check if orderbook meets quality criteria."""
+        best_bid, best_ask, best_ask_size = self._extract_best(orderbook)
 
-    # 1) normal orderbook levels (bids/asks)
-    bids = getattr(orderbook, "bids", None) or (orderbook.get("bids", []) if isinstance(orderbook, dict) else [])
-    asks = getattr(orderbook, "asks", None) or (orderbook.get("asks", []) if isinstance(orderbook, dict) else [])
+        # Check best_ask required
+        if self.require_best_ask and best_ask is None:
+            return QualityResult(is_healthy=False, reason="no_best_ask", best_bid=best_bid, best_ask=best_ask)
 
-    if bids:
-        b0 = bids[0]
-        best_bid = float(getattr(b0, "price", None) or (b0.get("price") if isinstance(b0, dict) else None))
+        # Check min ask size
+        if self.min_ask_size is not None and (best_ask_size is None or best_ask_size < self.min_ask_size):
+            return QualityResult(is_healthy=False, reason="ask_size_too_small", best_bid=best_bid, best_ask=best_ask)
 
-    if asks:
-        a0 = asks[0]
-        best_ask = float(getattr(a0, "price", None) or (a0.get("price") if isinstance(a0, dict) else None))
-        best_ask_size = float(getattr(a0, "size", None) or (a0.get("size", 0.0) if isinstance(a0, dict) else 0.0))
+        # Check spread
+        spread_pct = None
+        if best_bid is not None and best_ask is not None and best_ask != 0:
+            spread_pct = abs(best_ask - best_bid) / best_ask
+            if self.max_spread is not None and spread_pct > self.max_spread:
+                return QualityResult(is_healthy=False, reason="spread_too_wide", best_bid=best_bid, best_ask=best_ask, spread_pct=spread_pct)
 
-    # 2) fallback: top-of-book fields (best_bid/best_ask)
-    if best_bid is None:
-        v = getattr(orderbook, "best_bid", None)
-        if v is None and isinstance(orderbook, dict):
-            v = orderbook.get("best_bid")
-        if v is not None:
-            best_bid = float(v)
-
-    if best_ask is None:
-        v = getattr(orderbook, "best_ask", None)
-        if v is None and isinstance(orderbook, dict):
-            v = orderbook.get("best_ask")
-        if v is not None:
-            best_ask = float(v)
-
-    if best_ask_size is None:
-        v = getattr(orderbook, "best_ask_size", None)
-        if v is None and isinstance(orderbook, dict):
-            v = orderbook.get("best_ask_size")
-        if v is not None:
-            best_ask_size = float(v)
-
-    return best_bid, best_ask, best_ask_size
+        return QualityResult(is_healthy=True, reason="ok", best_bid=best_bid, best_ask=best_ask, spread_pct=spread_pct)
