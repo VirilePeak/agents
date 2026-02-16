@@ -23,38 +23,35 @@ def register(app: FastAPI) -> None:
         last_msg_age = metrics.get("last_msg_age_s")
         eventbus_dropped = metrics.get("counters", {}).get("market_data_eventbus_dropped_total", 0)
 
-        # Determine adapter presence primarily from telemetry gauge to avoid
-        # brittle cross-module introspection in some runtime setups.
+        # Determine adapter presence from telemetry gauge AND direct adapter check
         notes = []
         gauges = metrics.get("gauges", {})
         ws_connected = bool(gauges.get("market_data_ws_connected", 0))
+        
+        # Also check adapter directly from module globals
         adapter_present = ws_connected
         active_subs = 0
         stale_tokens = 0
-        if not adapter_present:
-            notes.append("adapter_not_initialized")
-            # If adapter import previously failed, surface that error for diagnostics
-            try:
-                import webhook_server_fastapi as ws  # type: ignore
-                err = getattr(ws, "_adapter_import_error", None)
-                if err:
-                    notes.append(f"adapter_import_error:{err}")
-            except Exception:
-                pass
-
-        # Prefer adapter internal state for active_subscriptions to avoid divergence
+        
         try:
             import webhook_server_fastapi as ws  # type: ignore
             adapter = getattr(ws, "_market_data_adapter", None)
             if adapter is not None:
+                adapter_present = True
                 subs = set(getattr(adapter, "_subs", set()) or set())
                 active_subs = len(subs)
+                # Also check ws_connected from adapter directly if gauge is 0
+                if not ws_connected:
+                    ws_connected = bool(getattr(adapter, "_started", False))
+            else:
+                notes.append("adapter_not_initialized")
+                # If adapter import previously failed, surface that error for diagnostics
+                err = getattr(ws, "_adapter_import_error", None)
+                if err:
+                    notes.append(f"adapter_import_error:{err}")
         except Exception:
-            # fallback to telemetry gauge
-            try:
-                active_subs = int(metrics.get("gauges", {}).get("market_data_active_subscriptions", 0))
-            except Exception:
-                active_subs = active_subs
+            if not adapter_present:
+                notes.append("adapter_not_initialized")
 
         ok = adapter_present and ws_connected
         return {
@@ -200,11 +197,9 @@ def register(app: FastAPI) -> None:
             # perform subscribe if requested and adapter available via app.state or module globals
             adapter_subscribed = False
             try:
-                adapter = getattr(request.app.state, "market_data_adapter", None)
-                # fallback to module-level globals if state not set (for tests and legacy compatibility)
-                if adapter is None:
-                    import webhook_server_fastapi as ws  # type: ignore
-                    adapter = getattr(ws, "_market_data_adapter", None)
+                # Import helper from webhook_server_fastapi
+                import webhook_server_fastapi as ws  # type: ignore
+                adapter = ws._get_market_data_adapter(request.app)
                 if adapter is None:
                     notes.append("adapter_unavailable")
                 else:

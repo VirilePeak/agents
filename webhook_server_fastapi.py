@@ -133,6 +133,15 @@ _market_data_desired_refcount: dict = {}
 _market_data_last_warn_ts: float = 0.0
 
 
+def _get_market_data_adapter(app=None):
+    """Helper to get adapter from app.state or global fallback."""
+    if app is not None:
+        adapter = getattr(app.state, "market_data_adapter", None)
+        if adapter is not None:
+            return adapter
+    return _market_data_adapter
+
+
 async def market_data_event_consumer():
     """
     Lightweight consumer that subscribes to the adapter EventBus and processes
@@ -346,7 +355,7 @@ async def startup_event():
                             logger.exception("Bootstrap reconcile failed")
                             return {"ok": False, "error": "exception"}
                     # schedule background reconcile loop
-                    async def reconcile_loop(interval: int = 30):
+                    async def reconcile_loop(app, interval: int = 30):
                         # Reconcile state with missing-counts to avoid flapping unsubscriptions
                         from src.market_data.reconcile import ReconcileState, reconcile_step
                         state = ReconcileState()
@@ -358,6 +367,13 @@ async def startup_event():
                             logger.debug("failed to set module-level reconcile state")
                         while True:
                             try:
+                                # Get adapter via helper
+                                adapter = _get_market_data_adapter(app)
+                                if adapter is None:
+                                    logger.warning("Reconcile loop: adapter not available, skipping iteration")
+                                    await asyncio.sleep(interval)
+                                    continue
+                                
                                 # Build desired_refcount from open trades
                                 pm = get_position_manager()
                                 active = pm.get_active_trades_summary()
@@ -409,7 +425,7 @@ async def startup_event():
                                 # compute actions
                                 try:
                                     missing_threshold = getattr(settings, "MARKET_DATA_RECONCILE_MISSING_THRESHOLD", 3)
-                                    res = reconcile_step(_market_data_adapter, desired_refcount, state, missing_threshold=missing_threshold)
+                                    res = reconcile_step(adapter, desired_refcount, state, missing_threshold=missing_threshold)
                                 except Exception:
                                     logger.exception("Reconcile step failed")
                                     res = {"to_subscribe": set(), "to_unsubscribe": set()}
@@ -417,14 +433,14 @@ async def startup_event():
                                 # perform subscribe/unsubscribe
                                 for tk in res.get("to_subscribe", set()):
                                     try:
-                                        await _market_data_adapter.subscribe(tk)
+                                        await adapter.subscribe(tk)
                                         logger.info("Reconcile: requested subscribe %s", str(tk)[:24])
                                     except Exception:
                                         logger.exception("Reconcile: subscribe failed for %s", tk)
 
                                 for tk in res.get("to_unsubscribe", set()):
                                     try:
-                                        await _market_data_adapter.unsubscribe(tk)
+                                        await adapter.unsubscribe(tk)
                                         logger.info("Reconcile: requested unsubscribe %s", str(tk)[:24])
                                         state.missing_count.pop(tk, None)
                                     except Exception:
@@ -443,8 +459,8 @@ async def startup_event():
                                 except Exception:
                                     last_age = None
                                     dropped = 0
-                                subs_count = len(getattr(_market_data_adapter, "_subs", set())) if _market_data_adapter else 0
-                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(_market_data_adapter, '_started', False))), str(dropped))
+                                subs_count = len(getattr(adapter, "_subs", set())) if adapter else 0
+                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(adapter, '_started', False))), str(dropped))
                                 # message-flow verification: if we have subscriptions but no recent messages, warn once per minute
                                 try:
                                     from src.config.settings import get_settings as _get_settings
@@ -458,16 +474,16 @@ async def startup_event():
                                     if subs_count > 0 and (last_age is None) and (now_ts - float(getattr(globals(), "_market_data_last_warn_ts", 0.0)) >= 60.0):
                                         example_token = None
                                         try:
-                                            example_token = next(iter(getattr(_market_data_adapter, "_subs", set())), None)
+                                            example_token = next(iter(getattr(adapter, "_subs", set())), None)
                                         except Exception:
                                             example_token = None
                                         providers = {
-                                            "ws": bool(getattr(_market_data_adapter, "provider", None)),
-                                            "rtds": bool(getattr(_market_data_adapter, "rtds_provider", None)),
+                                            "ws": bool(getattr(adapter, "provider", None)),
+                                            "rtds": bool(getattr(adapter, "rtds_provider", None)),
                                         }
                                         logger.warning(
                                             "MarketData warning: no messages received but subscriptions>0; ws_connected=%s subs=%d last_msg_age=%s example_token=%s providers=%s",
-                                            str(bool(getattr(_market_data_adapter, "_started", False))),
+                                            str(bool(getattr(adapter, "_started", False))),
                                             subs_count,
                                             str(last_age),
                                             str(example_token),
@@ -481,7 +497,7 @@ async def startup_event():
                             except Exception:
                                 logger.exception("Reconcile loop iteration failed")
                             await asyncio.sleep(interval)
-                    rt = asyncio.create_task(reconcile_loop(interval=getattr(settings, 'MARKET_DATA_RECONCILE_SECONDS', 30)))
+                    rt = asyncio.create_task(reconcile_loop(app, interval=getattr(settings, 'MARKET_DATA_RECONCILE_SECONDS', 30)))
                     _market_data_tasks.append(rt)
                     logger.info("MarketData reconcile loop scheduled")
                 except Exception:
