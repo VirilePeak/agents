@@ -197,10 +197,14 @@ def register(app: FastAPI) -> None:
             raw_before = snap_before.get("counters", {}).get("market_data_raw_messages_total", 0)
             msg_before = snap_before.get("counters", {}).get("market_data_messages_total", 0)
 
-            # perform subscribe if requested and adapter available via app.state
+            # perform subscribe if requested and adapter available via app.state or module globals
             adapter_subscribed = False
             try:
                 adapter = getattr(request.app.state, "market_data_adapter", None)
+                # fallback to module-level globals if state not set (for tests and legacy compatibility)
+                if adapter is None:
+                    import webhook_server_fastapi as ws  # type: ignore
+                    adapter = getattr(ws, "_market_data_adapter", None)
                 if adapter is None:
                     notes.append("adapter_unavailable")
                 else:

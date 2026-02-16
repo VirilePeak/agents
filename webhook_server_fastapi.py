@@ -3738,11 +3738,11 @@ async def confirm(payload: ConfirmationPayload):
         
         # Parse action
         action_upper = payload.action.upper().strip()
-        if action_upper not in ("ADD", "HEDGE", "EXIT"):
+        if action_upper not in ("ADD", "HEDGE", "EXIT", "CLOSE"):
             return {
                 "ok": False,
                 "error": "INVALID_ACTION",
-                "message": f"Action must be ADD, HEDGE, or EXIT, got: {payload.action}",
+                "message": f"Action must be ADD, HEDGE, EXIT, or CLOSE, got: {payload.action}",
             }
         
         # Parse additional_size for ADD (support both 'size' and 'additional_size')
@@ -3826,6 +3826,14 @@ async def confirm(payload: ConfirmationPayload):
                     )
                     if not success:
                         result["execution_error"] = "Failed to exit"
+                
+                elif action_upper == "CLOSE":
+                    # CLOSE is an alias for EXIT
+                    success = fast_entry_engine.exit_by_trade_id(
+                        trade_id=payload.trade_id,
+                    )
+                    if not success:
+                        result["execution_error"] = "Failed to close"
         
         # Return 409 if already handled, 200 otherwise
         if result.get("already_handled", False):
