@@ -5,6 +5,7 @@ Block G - Smart order execution with pre/post-trade checks
 
 import time
 import logging
+import threading
 from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass, field
 from enum import Enum
@@ -330,10 +331,13 @@ class ExecutionEngine:
 
 # Singleton instance
 _execution_engine: Optional[ExecutionEngine] = None
+_execution_lock = threading.Lock()
 
 def get_execution_engine() -> ExecutionEngine:
-    """Get or create singleton execution engine"""
+    """Get or create singleton execution engine (thread-safe)"""
     global _execution_engine
     if _execution_engine is None:
-        _execution_engine = ExecutionEngine()
+        with _execution_lock:
+            if _execution_engine is None:
+                _execution_engine = ExecutionEngine()
     return _execution_engine
