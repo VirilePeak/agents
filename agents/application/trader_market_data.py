@@ -89,11 +89,11 @@ class MarketDataEnhancedTrader:
     def clear_local_dbs(self) -> None:
         try:
             shutil.rmtree("local_db_events")
-        except:
+        except Exception:
             pass
         try:
             shutil.rmtree("local_db_markets")
-        except:
+        except Exception:
             pass
     
     def _check_new_trading_day(self) -> None:
@@ -309,7 +309,7 @@ class MarketDataEnhancedTrader:
             size = re.findall(r"\d+\.?\d*", best_trade.split(",")[1])[0]
             usdc_balance = self.polymarket.get_usdc_balance()
             return float(size) * usdc_balance
-        except:
+        except Exception:
             return 100.0
     
     def get_metrics(self) -> dict:

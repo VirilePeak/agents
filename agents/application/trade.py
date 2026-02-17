@@ -17,11 +17,11 @@ class Trader:
     def clear_local_dbs(self) -> None:
         try:
             shutil.rmtree("local_db_events")
-        except:
+        except Exception:
             pass
         try:
             shutil.rmtree("local_db_markets")
-        except:
+        except Exception:
             pass
 
     def one_best_trade(self) -> None:
