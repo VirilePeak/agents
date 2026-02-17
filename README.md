@@ -47,16 +47,26 @@ Expected output: 10 tables (runs, content_ideas, scripts, assets, qa_results, ap
 
 ## Workflows (n8n)
 
-| # | Workflow | Trigger | Time |
-|---|----------|---------|------|
-| 1 | Trend Discovery | Cron | Daily 06:00 |
-| 2 | Script Generation | Cron | Daily 07:00 |
-| 3 | Production Assets | Cron | Daily 08:00 |
-| 4 | QA & Compliance | Postgres trigger | on insert |
-| 5 | Human Approval Gate | Postgres + Webhook | on qa_passed |
-| 6 | Scheduling & Publishing | Postgres trigger | on approved |
-| 7 | Analytics Loop | Cron | Daily 18:00 + Sun 09:00 |
-| 8 | Content Library Maintenance | Cron | Sun 10:00 |
+### Master Orchestrator (Recommended)
+| # | Workflow | Trigger | Purpose |
+|---|----------|---------|---------|
+| **00** | **Master Pipeline** | Manual / Cron 06:00 | Orchestrates 01-03 with idempotency, logging, error handling |
+| 01 | Trend Discovery | Called by Master | Fetches trends, writes content_ideas |
+| 02 | Script Generation | Called by Master | Generates 3 variants, writes scripts |
+| 03 | Production Assets | Called by Master | Creates assets, triggers QA |
+| 04 | QA & Compliance | DB Trigger (assets insert) | Checks compliance, updates status |
+| 05 | Human Approval Gate | DB Trigger (qa_passed) + Webhook | Sends approval request |
+| 06 | Scheduling & Publishing | DB Trigger (approved) | Schedules posts, creates packs |
+| 07 | Analytics Loop | Cron 18:00 + Sun 09:00 | Pulls metrics, updates libraries |
+| 08 | Content Library Maintenance | Cron Sun 10:00 | Archives old patterns, refreshes voice |
+
+### Master Orchestrator Features
+- ✅ **Idempotency**: Skips if already ran successfully today
+- ✅ **Run Logging**: Full audit trail in `runs` table (start, steps, success/fail)
+- ✅ **Per-Step Timing**: Duration tracking for 01/02/03
+- ✅ **Mode Control**: `prod|dry_run|backfill` (set in "Set Mode" node)
+- ✅ **Error Handling**: Separate fail branches per step with notifications
+- ✅ **Success Summary**: Ideas count + Top 5 by score
 
 ## Feature/Behavior Rules
 - ✅ Captions are **English only**
@@ -97,35 +107,70 @@ Login credentials are set via `.env`:
 - Add **OpenAI** credential
 - Optional: Telegram/Email/Slack for approvals
 
-### 6. Activate workflows in order:
+### 6. Fix Execute Workflow Mappings (CRITICAL)
+
+In **00. Master Pipeline**, click each Execute Workflow node and **select the workflow from dropdown**:
+
+| Node | Select Workflow |
+|------|-----------------|
+| Step 01: Execute | "1. Trend Discovery (Daily)" |
+| Step 02: Execute | "2. Script Generation (Daily)" |
+| Step 03: Execute | "3. Production Assets (Daily)" |
+
+**Do NOT just enter the ID - use the dropdown!**
+
+### 7. Activate workflows in order:
 ```
-1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
+00 (Master) → 01 → 02 → 03 → 04 → 05 → 06 → 07 → 08
 ```
 
 ## First Run Test (End-to-End)
 
-### Step 1: Run Workflow 1 (Trend Discovery)
+### Option A: Use Master Orchestrator (Recommended)
+1. Open **00. Master Pipeline**
+2. Click **"Execute Workflow"** (Manual Trigger)
+3. Check notifications for progress
+4. Verify in Postgres:
+```sql
+-- Check runs table
+SELECT workflow_id, run_key, status, meta FROM runs WHERE workflow_id = '00_master' ORDER BY started_at DESC LIMIT 1;
+
+-- Check ideas created
+SELECT count(*) FROM content_ideas WHERE created_at >= date_trunc('day', now());
+```
+
+### Option B: Manual Step-by-Step
+
+#### Step 1: Run Workflow 01 (Trend Discovery)
 Execute manually in n8n → Check: `SELECT * FROM content_ideas;`
 
-### Step 2: Run Workflow 2 (Script Generation)
+#### Step 2: Run Workflow 02 (Script Generation)
 Execute manually → Check: `SELECT * FROM scripts;`
 
-### Step 3: Run Workflow 3 (Production Assets)
+#### Step 3: Run Workflow 03 (Production Assets)
 Execute manually → Check: `SELECT * FROM assets;`
 
-### Step 4: QA Check
-Insert QA result: `INSERT INTO qa_results (idea_id, passed, issues, notes) SELECT id, true, '[]', 'test' FROM content_ideas LIMIT 1;`
-Update script: `UPDATE scripts SET status='qa_passed' WHERE id IN (SELECT id FROM scripts LIMIT 1);`
-→ Workflow 4 & 5 should trigger
+#### Step 4: QA Check
+Insert QA result:
+```sql
+INSERT INTO qa_results (idea_id, passed, issues, notes) 
+SELECT id, true, '[]', 'test' FROM content_ideas LIMIT 1;
 
-### Step 5: Approval
+UPDATE scripts SET status='qa_passed' 
+WHERE id IN (SELECT id FROM scripts LIMIT 1);
+```
+→ Workflow 04 & 05 should trigger
+
+#### Step 5: Approval
 Check Telegram/Email for approval request, or insert directly:
 ```sql
 INSERT INTO approvals (idea_id, decision, notes, decided_by) 
 SELECT id, 'approve', 'test', 'admin' FROM content_ideas WHERE status='qa' LIMIT 1;
-UPDATE scripts SET status='approved' WHERE idea_id IN (SELECT idea_id FROM approvals WHERE decision='approve');
+
+UPDATE scripts SET status='approved' 
+WHERE idea_id IN (SELECT idea_id FROM approvals WHERE decision='approve');
 ```
-→ Workflow 6 should trigger, creating entries in `publish_queue`
+→ Workflow 06 should trigger, creating entries in `publish_queue`
 
 ## Smoke Test (Quick)
 
@@ -138,7 +183,7 @@ docker exec -it postgres psql -U content -d content_automation -c \
 ```
 
 Then run:
-- **Workflow 2** (Script Generation) manually in n8n
+- **Workflow 02** (Script Generation) manually in n8n
 
 Verify scripts table:
 ```bash
@@ -184,9 +229,24 @@ docker exec postgres pg_dump -U content content_automation > backup.sql
 - Postgres trigger workflows need the **Postgres Trigger node** (not just query)
 - Ensure the trigger is connected to the correct table/column
 
+### Execute Workflow shows "undefined":
+- **You must select the workflow from the dropdown**, not just enter the ID
+- Click the node → Workflow dropdown → Select by name
+
 ## Dashboard Queries
 
-Daily throughput:
+### Master Pipeline Runs
+```sql
+SELECT run_key, status, started_at, finished_at,
+       meta->'result'->>'ideas_today' as ideas,
+       meta->'steps' as step_details
+FROM runs 
+WHERE workflow_id = '00_master' 
+ORDER BY started_at DESC 
+LIMIT 10;
+```
+
+### Daily throughput
 ```sql
 SELECT date_trunc('day', created_at)::date AS day,
        count(*) FILTER (WHERE status='new') AS new_ideas,
@@ -196,12 +256,12 @@ WHERE created_at >= now() - interval '14 days'
 GROUP BY 1 ORDER BY 1 DESC;
 ```
 
-Queue health:
+### Queue health
 ```sql
 SELECT platform, status, count(*) FROM publish_queue GROUP BY platform, status;
 ```
 
-Stuck items:
+### Stuck items
 ```sql
 SELECT id, title, status, updated_at,
        extract(epoch from (now() - updated_at))/3600 as hours_stuck
@@ -237,6 +297,7 @@ TARGET_AUDIENCE="aspiring entrepreneurs aged 25-35"
 .
 ├── docker-compose.yml    # Service definitions
 ├── init.sql              # Database schema (auto-executed)
+├── .env.example          # Env template
 ├── .env                  # Credentials (NEVER COMMIT)
 └── README.md             # This file
 ```
