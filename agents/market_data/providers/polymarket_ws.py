@@ -220,8 +220,9 @@ class PolymarketWSClient:
         logger.info(f"Connecting to {self.WS_URL}")
         
         async with websockets.connect(self.WS_URL, ping_interval=20, ping_timeout=10) as ws:
-            self._ws = ws
-            self._connected = True
+            with self._lock:
+                self._ws = ws
+                self._connected = True
             
             # Resubscribe to all markets
             with self._lock:
@@ -241,6 +242,10 @@ class PolymarketWSClient:
                     break
                 
                 await self._handle_message(message)
+            
+            # Connection closed or broken
+            with self._lock:
+                self._connected = False
     
     async def _handle_message(self, message: str):
         """Handle incoming WebSocket message"""
