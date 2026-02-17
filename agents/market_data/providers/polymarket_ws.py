@@ -278,6 +278,13 @@ class PolymarketWSClient:
             
             with self._lock:
                 self._latest_quotes[market_id] = quote
+                # Limit memory usage - keep only subscribed markets
+                if len(self._latest_quotes) > 1000:
+                    # Remove quotes for unsubscribed markets
+                    for mid in list(self._latest_quotes.keys()):
+                        if mid not in self._subscriptions:
+                            del self._latest_quotes[mid]
+                            break
             
             if self.on_quote:
                 self.on_quote(quote)
