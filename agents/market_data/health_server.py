@@ -7,9 +7,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 import json
 import logging
-from typing import Dict, Any
+import time
+from typing import Dict, Any, Optional
 
-from .polymarket_ws import get_ws_client
+from .providers.polymarket_ws import get_ws_client
 
 logger = logging.getLogger(__name__)
 

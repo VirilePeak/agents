@@ -129,7 +129,8 @@ class TestRiskManagerTradeChecks:
             max_risk_pct_per_trade=2.0,
             max_total_exposure_pct=15.0,
             daily_loss_limit_pct=5.0,
-            max_concurrent_positions=5
+            max_concurrent_positions=5,
+            max_spread_bps=1000  # Very relaxed for this test
         )
         manager = RiskManager(config)
         portfolio = PortfolioState(equity=10000.0)
@@ -216,7 +217,7 @@ class TestRiskManagerExitChecks:
     
     def test_no_exit_needed(self):
         """Test position that doesn't need exit"""
-        config = RiskConfig(max_slippage_bps=100)
+        config = RiskConfig(max_slippage_bps=100, max_spread_bps=1000)
         manager = RiskManager(config)
         
         position = Position("m1", "t1", "yes", 0.5, 1000.0)
