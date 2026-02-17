@@ -239,6 +239,82 @@ export METRICS_PORT=9090
 lsof -i :9090
 ```
 
+## 5m-Ready Mode (Market Data + Execution)
+
+For reliable 5-minute timeframe trading with WebSocket data and smart execution:
+
+### Enable Market Data Features
+```bash
+# Core flags (all default OFF)
+export WS_ENABLED=1              # Enable WebSocket market data
+export L2_ENABLED=1              # Enable Level-2 orderbook
+export EXECUTION_ENABLED=1       # Enable smart execution engine
+
+# WebSocket config
+export MARKET_DATA_HEALTH_PORT=9091  # Health endpoint port
+
+# Liquidity thresholds
+export MAX_SPREAD_BPS=100        # Max 1% spread
+export MIN_DEPTH_1BP=1000        # Min $1000 at 1bp
+export MIN_DEPTH_5BP=5000        # Min $5000 at 5bp
+export MAX_BOOK_AGE_S=5          # Max 5s stale data
+
+# Execution config
+export EXEC_ORDER_TYPE=smart     # maker/taker/smart
+export EXEC_MAX_SLIPPAGE_BPS=50  # Max 0.5% slippage
+export EXEC_ICEBERG_THRESHOLD=1000  # Split orders >$1000
+```
+
+### Conservative Defaults (Recommended Start)
+```bash
+export WS_ENABLED=1
+export L2_ENABLED=1
+export EXECUTION_ENABLED=1
+export MAX_SPREAD_BPS=200        # 2% (relaxed)
+export MIN_DEPTH_1BP=500         # $500
+export MIN_DEPTH_5BP=2000        # $2000
+export MAX_BOOK_AGE_S=10         # 10s (relaxed)
+```
+
+### How to Run (5m Mode)
+```bash
+# 1. Set flags
+export WS_ENABLED=1
+export L2_ENABLED=1
+export EXECUTION_ENABLED=1
+
+# 2. Start bot
+python -m agents.application.trader_market_data
+
+# 3. Verify health
+curl http://localhost:9091/market-data/health
+curl http://localhost:9091/market-data/status
+
+# 4. Check metrics
+curl http://localhost:9090/metrics
+```
+
+### How to Verify
+```bash
+# WebSocket connected?
+curl -s http://localhost:9091/market-data/health | jq '.websocket.connected'
+
+# Subscriptions active?
+curl -s http://localhost:9091/market-data/health | jq '.websocket.active_subscriptions'
+
+# Quotes fresh?
+curl -s http://localhost:9091/market-data/status | jq '.quotes'
+
+# Execution working?
+# Look for: [EXECUTION] Success: filled=$X @ $Y
+```
+
+### Fallback Behavior
+If WS/L2 unavailable, bot automatically falls back to HTTP/Gamma:
+- No crash
+- Slower updates (polling)
+- Less precise execution
+
 ## License
 
 See LICENSE.md
