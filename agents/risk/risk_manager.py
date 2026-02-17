@@ -131,6 +131,11 @@ class RiskManager:
             return False, RiskBlockReason.MAX_CONCURRENT_POSITIONS, msg
         
         # 3. Check max exposure
+        if portfolio.equity <= 0:
+            msg = f"Invalid equity: ${portfolio.equity:.2f}"
+            self._log_blocked_trade(RiskBlockReason.MAX_EXPOSURE, msg)
+            return False, RiskBlockReason.MAX_EXPOSURE, msg
+        
         new_exposure_pct = ((portfolio.total_exposure + proposed_size) / portfolio.equity) * 100
         if new_exposure_pct > self.config.max_total_exposure_pct:
             msg = f"Max exposure would be exceeded: {new_exposure_pct:.2f}% > {self.config.max_total_exposure_pct}%"
@@ -138,6 +143,11 @@ class RiskManager:
             return False, RiskBlockReason.MAX_EXPOSURE, msg
         
         # 4. Check position size (max risk per trade)
+        if portfolio.equity <= 0:
+            msg = f"Invalid equity: ${portfolio.equity:.2f}"
+            self._log_blocked_trade(RiskBlockReason.MAX_POSITION_SIZE, msg)
+            return False, RiskBlockReason.MAX_POSITION_SIZE, msg
+        
         position_risk_pct = (proposed_size / portfolio.equity) * 100
         if position_risk_pct > self.config.max_risk_pct_per_trade:
             msg = f"Position size too large: {position_risk_pct:.2f}% > {self.config.max_risk_pct_per_trade}%"
