@@ -6,6 +6,7 @@ Block C - Step 2
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
+from typing import Optional
 import logging
 
 from .metrics import get_metrics_collector
