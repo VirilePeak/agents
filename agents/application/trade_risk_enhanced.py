@@ -186,11 +186,9 @@ class Trader:
             # self._daily_pnl += calculated_pnl
 
         except Exception as e:
-            print(f"Error {e} \n \n Retrying")
-            # Don't infinite retry - add backoff
-            import time
-            time.sleep(1)
-            self.one_best_trade()
+            print(f"Error {e}")
+            # Limit retries - max 3 attempts
+            raise  # Re-raise instead of infinite recursion
 
     def maintain_positions(self):
         """Check existing positions for exit signals"""
