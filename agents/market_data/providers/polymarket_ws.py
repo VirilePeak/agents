@@ -210,12 +210,16 @@ class PolymarketWSClient:
                 time.sleep(self.reconnect_interval)
                 with self._lock:
                     self._reconnect_count += 1
+        
+        # Clean up event loop
+        if self._event_loop:
+            self._event_loop.close()
     
     async def _connect_and_listen(self):
         """Connect and listen to WebSocket"""
         logger.info(f"Connecting to {self.WS_URL}")
         
-        async with websockets.connect(self.WS_URL) as ws:
+        async with websockets.connect(self.WS_URL, ping_interval=20, ping_timeout=10) as ws:
             self._ws = ws
             self._connected = True
             
