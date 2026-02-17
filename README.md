@@ -1,219 +1,246 @@
-<!-- PROJECT SHIELDS -->
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![MIT License][license-shield]][license-url]
-
-
-<!-- PROJECT LOGO -->
-<br />
-<div align="center">
-  <a href="https://github.com/polymarket/agents">
-    <img src="docs/images/cli.png" alt="Logo" width="466" height="262">
-  </a>
-
-<h3 align="center">Polymarket Agents</h3>
-
-  <p align="center">
-    Trade autonomously on Polymarket using AI Agents
-    <br />
-    <a href="https://github.com/polymarket/agents"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="https://github.com/polymarket/agents">View Demo</a>
-    ·
-    <a href="https://github.com/polymarket/agents/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
-    ·
-    <a href="https://github.com/polymarket/agents/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
-  </p>
-</div>
-
-
-<!-- CONTENT -->
-# Polymarket Agents
-
-Polymarket Agents is a developer framework and set of utilities for building AI agents for Polymarket.
-
-This code is free and publicly available under MIT License open source license ([terms of service](#terms-of-service))!
-
-## Features
-
-- Integration with Polymarket API
-- AI agent utilities for prediction markets
-- Local and remote RAG (Retrieval-Augmented Generation) support
-- Data sourcing from betting services, news providers, and web search
-- Comphrehensive LLM tools for prompt engineering
-
-# Getting started
-
-This repo is inteded for use with Python 3.9
-
-1. Clone the repository
-
-   ```
-   git clone https://github.com/{username}/polymarket-agents.git
-   cd polymarket-agents
-   ```
-
-2. Create the virtual environment
-
-   ```
-   virtualenv --python=python3.9 .venv
-   ```
-
-3. Activate the virtual environment
-
-   - On Windows:
-
-   ```
-   .venv\Scripts\activate
-   ```
-
-   - On macOS and Linux:
-
-   ```
-   source .venv/bin/activate
-   ```
-
-4. Install the required dependencies:
-
-   ```
-   pip install -r requirements.txt
-   ```
-
-5. Set up your environment variables:
-
-   - Create a `.env` file in the project root directory
-
-   ```
-   cp .env.example .env
-   ```
-
-   - Add the following environment variables:
-
-   ```
-   POLYGON_WALLET_PRIVATE_KEY=""
-   OPENAI_API_KEY=""
-   ```
-
-6. Load your wallet with USDC.
-
-7. Try the command line interface...
-
-   ```
-   python scripts/python/cli.py
-   ```
-
-   Or just go trade! 
-
-   ```
-   python agents/application/trade.py
-   ```
-
-8. Note: If running the command outside of docker, please set the following env var:
-
-   ```
-   export PYTHONPATH="."
-   ```
-
-   If running with docker is preferred, we provide the following scripts:
-
-   ```
-   ./scripts/bash/build-docker.sh
-   ./scripts/bash/run-docker-dev.sh
-   ```
-
-## Architecture
-
-The Polymarket Agents architecture features modular components that can be maintained and extended by individual community members.
-
-### APIs
-
-Polymarket Agents connectors standardize data sources and order types.
-
-- `Chroma.py`: chroma DB for vectorizing news sources and other API data. Developers are able to add their own vector database implementations.
-
-- `Gamma.py`: defines `GammaMarketClient` class, which interfaces with the Polymarket Gamma API to fetch and parse market and event metadata. Methods to retrieve current and tradable markets, as well as defined information on specific markets and events.
-
-- `Polymarket.py`: defines a Polymarket class that interacts with the Polymarket API to retrieve and manage market and event data, and to execute orders on the Polymarket DEX. It includes methods for API key initialization, market and event data retrieval, and trade execution. The file also provides utility functions for building and signing orders, as well as examples for testing API interactions.
-
-- `Objects.py`: data models using Pydantic; representations for trades, markets, events, and related entities.
-
-### Scripts
-
-Files for managing your local environment, server set-up to run the application remotely, and cli for end-user commands.
-
-`cli.py` is the primary user interface for the repo. Users can run various commands to interact with the Polymarket API, retrieve relevant news articles, query local data, send data/prompts to LLMs, and execute trades in Polymarkets.
-
-Commands should follow this format:
-
-`python scripts/python/cli.py command_name [attribute value] [attribute value]`
-
-Example:
-
-`get-all-markets`
-Retrieve and display a list of markets from Polymarket, sorted by volume.
-
-   ```
-   python scripts/python/cli.py get-all-markets --limit <LIMIT> --sort-by <SORT_BY>
-   ```
-
-- limit: The number of markets to retrieve (default: 5).
-- sort_by: The sorting criterion, either volume (default) or another valid attribute.
-
-# Contributing
-
-If you would like to contribute to this project, please follow these steps:
-
-1. Fork the repository.
-2. Create a new branch.
-3. Make your changes.
-4. Submit a pull request.
-
-Please run pre-commit hooks before making contributions. To initialize them:
-
-   ```
-   pre-commit install
-   ```
-
-# Related Repos
-
-- [py-clob-client](https://github.com/Polymarket/py-clob-client): Python client for the Polymarket CLOB
-- [python-order-utils](https://github.com/Polymarket/python-order-utils): Python utilities to generate and sign orders from Polymarket's CLOB
-- [Polymarket CLOB client](https://github.com/Polymarket/clob-client): Typescript client for Polymarket CLOB
-- [Langchain](https://github.com/langchain-ai/langchain): Utility for building context-aware reasoning applications
-- [Chroma](https://docs.trychroma.com/getting-started): Chroma is an AI-native open-source vector database
-
-# Prediction markets reading
-
-- Prediction Markets: Bottlenecks and the Next Major Unlocks, Mikey 0x: https://mirror.xyz/1kx.eth/jnQhA56Kx9p3RODKiGzqzHGGEODpbskivUUNdd7hwh0
-- The promise and challenges of crypto + AI applications, Vitalik Buterin: https://vitalik.eth.limo/general/2024/01/30/cryptoai.html
-- Superforecasting: How to Upgrade Your Company's Judgement, Schoemaker and Tetlock: https://hbr.org/2016/05/superforecasting-how-to-upgrade-your-companys-judgment
-
-# License
-
-This project is licensed under the MIT License. See the [LICENSE](https://github.com/Polymarket/agents/blob/main/LICENSE.md) file for details.
-
-# Contact
-
-For any questions or inquiries, please contact liam@polymarket.com or reach out at www.greenestreet.xyz
-
-Enjoy using the CLI application! If you encounter any issues, feel free to open an issue on the repository.
-
-# Terms of Service
-
-[Terms of Service](https://polymarket.com/tos) prohibit US persons and persons from certain other jurisdictions from trading on Polymarket (via UI & API and including agents developed by persons in restricted jurisdictions), although data and information is viewable globally.
-
-
-<!-- LINKS -->
-[contributors-shield]: https://img.shields.io/github/contributors/polymarket/agents?style=for-the-badge
-[contributors-url]: https://github.com/polymarket/agents/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/polymarket/agents?style=for-the-badge
-[forks-url]: https://github.com/polymarket/agents/network/members
-[stars-shield]: https://img.shields.io/github/stars/polymarket/agents?style=for-the-badge
-[stars-url]: https://github.com/polymarket/agents/stargazers
-[issues-shield]: https://img.shields.io/github/issues/polymarket/agents?style=for-the-badge
-[issues-url]: https://github.com/polymarket/agents/issues
-[license-shield]: https://img.shields.io/github/license/polymarket/agents?style=for-the-badge
-[license-url]: https://github.com/polymarket/agents/blob/master/LICENSE.md
+# Content Automation (n8n + Postgres)
+
+This project runs an 8-workflow content automation system for YouTube Shorts, TikTok, and Instagram Reels.
+Single source of truth is Postgres (`content_automation`).
+
+## Requirements
+- Docker + Docker Compose
+- n8n instance running in the same Docker network as Postgres
+
+## Services / Network
+- Postgres container name: `postgres`
+- n8n container name: `n8n` (example)
+- Same Docker network required.
+
+## URLs & Ports
+| Service | URL | Port | Notes |
+|---------|-----|------|-------|
+| n8n UI | http://localhost:5678 | 5678 | Web interface |
+| Postgres | localhost:5432 | 5432 | Local debugging only |
+
+## PostgreSQL Credentials (n8n)
+| Setting | Value |
+|---------|-------|
+| Host | `postgres` |
+| Port | `5432` |
+| Database | `content_automation` |
+| User | `content` |
+| Password | `content_pass` |
+| SSL | disabled |
+
+## Database Initialization
+Schema is created from `init.sql` on first start via:
+```
+/docker-entrypoint-initdb.d/init.sql
+```
+
+## Verify Installation (2 minutes)
+```bash
+# Check containers are running
+docker compose ps
+
+# Verify database schema exists
+docker exec -it postgres psql -U content -d content_automation -c "\dt"
+```
+
+Expected output: 10 tables (runs, content_ideas, scripts, assets, qa_results, approvals, publish_queue, analytics_daily, hooks_library, patterns_library)
+
+## Workflows (n8n)
+
+| # | Workflow | Trigger | Time |
+|---|----------|---------|------|
+| 1 | Trend Discovery | Cron | Daily 06:00 |
+| 2 | Script Generation | Cron | Daily 07:00 |
+| 3 | Production Assets | Cron | Daily 08:00 |
+| 4 | QA & Compliance | Postgres trigger | on insert |
+| 5 | Human Approval Gate | Postgres + Webhook | on qa_passed |
+| 6 | Scheduling & Publishing | Postgres trigger | on approved |
+| 7 | Analytics Loop | Cron | Daily 18:00 + Sun 09:00 |
+| 8 | Content Library Maintenance | Cron | Sun 10:00 |
+
+## Feature/Behavior Rules
+- ✅ Captions are **English only**
+- ✅ **No hashtags** in output
+- ✅ Publishing includes a **human approval gate**
+- ✅ If a platform API is missing, the workflow outputs **Publish Pending / Manual Required** (never claim posted)
+
+## Quick Start
+
+### 1. Create .env file
+```bash
+cp .env.example .env
+# Edit .env and set your credentials
+```
+
+### 2. Start containers
+```bash
+docker compose up -d
+```
+
+### 3. Verify installation
+```bash
+docker compose ps
+docker exec -it postgres psql -U content -d content_automation -c "\dt"
+```
+
+### 4. Access n8n
+Open http://localhost:5678
+
+Login credentials are set via `.env`:
+- `N8N_BASIC_AUTH_USER` (default: admin)
+- `N8N_BASIC_AUTH_PASSWORD` (default: changeme)
+
+⚠️ **Change the default password in production!**
+
+### 5. Set n8n credentials
+- Add **Postgres** credential using the values above
+- Add **OpenAI** credential
+- Optional: Telegram/Email/Slack for approvals
+
+### 6. Activate workflows in order:
+```
+1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
+```
+
+## First Run Test (End-to-End)
+
+### Step 1: Run Workflow 1 (Trend Discovery)
+Execute manually in n8n → Check: `SELECT * FROM content_ideas;`
+
+### Step 2: Run Workflow 2 (Script Generation)
+Execute manually → Check: `SELECT * FROM scripts;`
+
+### Step 3: Run Workflow 3 (Production Assets)
+Execute manually → Check: `SELECT * FROM assets;`
+
+### Step 4: QA Check
+Insert QA result: `INSERT INTO qa_results (idea_id, passed, issues, notes) SELECT id, true, '[]', 'test' FROM content_ideas LIMIT 1;`
+Update script: `UPDATE scripts SET status='qa_passed' WHERE id IN (SELECT id FROM scripts LIMIT 1);`
+→ Workflow 4 & 5 should trigger
+
+### Step 5: Approval
+Check Telegram/Email for approval request, or insert directly:
+```sql
+INSERT INTO approvals (idea_id, decision, notes, decided_by) 
+SELECT id, 'approve', 'test', 'admin' FROM content_ideas WHERE status='qa' LIMIT 1;
+UPDATE scripts SET status='approved' WHERE idea_id IN (SELECT idea_id FROM approvals WHERE decision='approve');
+```
+→ Workflow 6 should trigger, creating entries in `publish_queue`
+
+## Smoke Test (Quick)
+
+Insert a demo idea:
+```bash
+docker exec -it postgres psql -U content -d content_automation -c \
+"INSERT INTO content_ideas (idea_hash, niche, title, premise, sources, freshness_score, potential_score, status)
+ VALUES ('hash_demo_001','dtc','Demo idea','Demo premise','[\"demo\"]',0.9,0.9,'new')
+ ON CONFLICT (idea_hash) DO NOTHING;"
+```
+
+Then run:
+- **Workflow 2** (Script Generation) manually in n8n
+
+Verify scripts table:
+```bash
+docker exec -it postgres psql -U content -d content_automation -c "SELECT variant, left(script_text,80) FROM scripts LIMIT 10;"
+```
+
+## Data Persistence
+
+Data is stored in Docker volumes:
+- `postgres_data` - Database files
+- `n8n_data` - n8n workflows and credentials
+
+⚠️ **WARNING:** `docker compose down -v` deletes ALL data permanently!
+
+Backup before destructive operations:
+```bash
+docker exec postgres pg_dump -U content content_automation > backup.sql
+```
+
+## Security Notes
+
+- ✅ Set n8n auth via `.env` (`N8N_BASIC_AUTH_USER` / `N8N_BASIC_AUTH_PASSWORD`). Do not hardcode credentials in docs.
+- ✅ Never commit `.env` or credential JSON files (Google OAuth/Drive).
+- ✅ Add to `.gitignore`:
+  ```
+  .env
+  *.json
+  credentials/
+  backup.sql
+  ```
+
+## Common Issues
+
+### n8n cannot reach Postgres:
+- Ensure both containers are in the **same network**
+- Host must be `postgres` (container name), **not localhost**
+
+### Schema not created:
+- Ensure `init.sql` is mounted into `/docker-entrypoint-initdb.d/`
+- Check: `docker exec postgres ls /docker-entrypoint-initdb.d/`
+
+### Workflow triggers not firing:
+- Postgres trigger workflows need the **Postgres Trigger node** (not just query)
+- Ensure the trigger is connected to the correct table/column
+
+## Dashboard Queries
+
+Daily throughput:
+```sql
+SELECT date_trunc('day', created_at)::date AS day,
+       count(*) FILTER (WHERE status='new') AS new_ideas,
+       count(*) FILTER (WHERE status='published') AS published
+FROM content_ideas
+WHERE created_at >= now() - interval '14 days'
+GROUP BY 1 ORDER BY 1 DESC;
+```
+
+Queue health:
+```sql
+SELECT platform, status, count(*) FROM publish_queue GROUP BY platform, status;
+```
+
+Stuck items:
+```sql
+SELECT id, title, status, updated_at,
+       extract(epoch from (now() - updated_at))/3600 as hours_stuck
+FROM content_ideas
+WHERE updated_at < now() - interval '24 hours'
+  AND status IN ('new','scripted','assets_ready','qa','approved','scheduled')
+ORDER BY updated_at ASC;
+```
+
+## Environment Variables (n8n)
+
+Set in n8n: **Settings → Variables**
+
+```bash
+# Required
+OPENAI_API_KEY=sk-xxxxxxxxxxxx
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=content_automation
+DB_USER=content
+DB_PASSWORD=content_pass
+
+# Optional
+TELEGRAM_BOT_TOKEN=xxxxxx:xxxxxxxxxxxx
+TELEGRAM_CHAT_ID=123456789
+YOUTUBE_API_KEY=AIzaxxxxxxxxxxxx
+NICHE=entrepreneurship
+TARGET_AUDIENCE="aspiring entrepreneurs aged 25-35"
+```
+
+## File Structure
+```
+.
+├── docker-compose.yml    # Service definitions
+├── init.sql              # Database schema (auto-executed)
+├── .env                  # Credentials (NEVER COMMIT)
+└── README.md             # This file
+```
+
+## Support
+- n8n docs: https://docs.n8n.io
+- Postgres docs: https://www.postgresql.org/docs/
