@@ -163,6 +163,27 @@ def register(app: FastAPI) -> None:
         clob_token_ids: list[str] = []
         subscribed_count = 0
 
+        def _sample_payload() -> dict[str, Any]:
+            unknown_sample = None
+            raw_sample = None
+            parse_error_sample = None
+            try:
+                adapter_local = getattr(request.app.state, "market_data_adapter", None)
+                if adapter_local is not None:
+                    if getattr(adapter_local, "get_unknown_sample", None):
+                        unknown_sample = adapter_local.get_unknown_sample()
+                    if getattr(adapter_local, "get_last_raw_sample", None):
+                        raw_sample = adapter_local.get_last_raw_sample()
+                    if getattr(adapter_local, "get_last_parse_error_sample", None):
+                        parse_error_sample = adapter_local.get_last_parse_error_sample()
+            except Exception:
+                pass
+            return {
+                "unknown_sample": unknown_sample,
+                "raw_sample": raw_sample,
+                "parse_error_sample": parse_error_sample,
+            }
+
         try:
             now_ts = time.time()
             if signal_id:
@@ -187,10 +208,10 @@ def register(app: FastAPI) -> None:
                 clob_token_ids = [str(x) for x in (clob or [])]
             except NoCurrentMarket as e:
                 notes.append(f"no_current_market: {e}")
-                return {"ok": False, "derived_slug": derived_slug, "notes": notes}
+                return {"ok": False, "derived_slug": derived_slug, "notes": notes, "metrics": telemetry.get_snapshot(), "subscriptions": {"active_subscriptions": 0, "tokens": []}, **_sample_payload()}
             except Exception as e:
                 notes.append(f"discovery_error: {e}")
-                return {"ok": False, "notes": notes}
+                return {"ok": False, "notes": notes, "metrics": telemetry.get_snapshot(), "subscriptions": {"active_subscriptions": 0, "tokens": []}, **_sample_payload()}
 
             # telemetry snapshot before
             snap_before = telemetry.get_snapshot()

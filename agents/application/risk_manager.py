@@ -289,8 +289,21 @@ class RiskManager:
         now = now_ts or time.time()
         if getattr(settings, "KILL_SWITCH_ENABLED", False):
             if self.kill_switch_until_ts and now < float(self.kill_switch_until_ts):
-                telemetry.set_gauge("market_data_kill_switch_active", 1)
-                return False, "kill_switch_cooldown", {**details, "kill_switch_until": self.kill_switch_until_ts}
+                # Guard against stale persisted cooldown from unrelated runs:
+                # when no recent closed trades exist, clear stale cooldown and continue.
+                recent = []
+                try:
+                    recent = self._recent_closed_trades()[: int(settings.KILL_SWITCH_LOOKBACK_CLOSED)]
+                except Exception:
+                    recent = []
+                if not recent:
+                    try:
+                        self._clear_risk_state()
+                    except Exception:
+                        pass
+                else:
+                    telemetry.set_gauge("market_data_kill_switch_active", 1)
+                    return False, "kill_switch_cooldown", {**details, "kill_switch_until": self.kill_switch_until_ts}
             # if cooldown expired, clear state
             if self.kill_switch_until_ts and now >= float(self.kill_switch_until_ts):
                 try:
