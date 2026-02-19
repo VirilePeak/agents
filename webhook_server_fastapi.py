@@ -132,6 +132,41 @@ _market_data_reconcile_state = None
 _market_data_desired_refcount: dict = {}
 _market_data_last_warn_ts: float = 0.0
 
+def _get_market_data_adapter(app_obj: FastAPI | None = None):
+    """Return the canonical MarketData adapter instance (app.state first, then module global)."""
+    try:
+        if app_obj is not None:
+            state = getattr(app_obj, "state", None)
+            if state is not None:
+                adapter = getattr(state, "market_data_adapter", None)
+                if adapter is not None:
+                    return adapter
+    except Exception:
+        pass
+    return globals().get("_market_data_adapter", None)
+
+
+async def _reconcile_subscriptions(adapter, reconcile_result: dict, state) -> None:
+    """Best-effort subscribe/unsubscribe executor. Safe when adapter is unavailable."""
+    if adapter is None:
+        logger.warning("Reconcile: market-data adapter unavailable, skipping subscribe/unsubscribe this interval")
+        return
+
+    for tk in reconcile_result.get("to_subscribe", set()):
+        try:
+            await adapter.subscribe(tk)
+            logger.info("Reconcile: requested subscribe %s", str(tk)[:24])
+        except Exception:
+            logger.exception("Reconcile: subscribe failed for %s", tk)
+
+    for tk in reconcile_result.get("to_unsubscribe", set()):
+        try:
+            await adapter.unsubscribe(tk)
+            logger.info("Reconcile: requested unsubscribe %s", str(tk)[:24])
+            state.missing_count.pop(tk, None)
+        except Exception:
+            logger.exception("Reconcile: unsubscribe failed for %s", tk)
+
 
 async def market_data_event_consumer():
     """
@@ -290,6 +325,12 @@ async def startup_event():
     # Initialize MarketDataAdapter (if enabled). Start idempotently and register event consumer task.
     global _market_data_adapter, _market_data_tasks
     try:
+        # Always expose canonical adapter handle on app.state (can be None)
+        try:
+            app.state.market_data_adapter = _get_market_data_adapter(app)
+        except Exception:
+            logger.debug("Could not initialize app.state.market_data_adapter")
+
         if getattr(settings, "MARKET_DATA_WS_ENABLED", True):
             if _market_data_adapter is None:
                 if MarketDataAdapterClass is None:
@@ -309,7 +350,7 @@ async def startup_event():
                 # bind adapter and telemetry to app.state for admin/debug handlers
                 try:
                     from src.market_data.telemetry import telemetry as _telemetry
-                    app.state.market_data_adapter = _market_data_adapter
+                    app.state.market_data_adapter = _get_market_data_adapter(app)
                     app.state.market_data_telemetry = _telemetry
                     import os
                     app.state.market_data_pid = os.getpid()
@@ -406,29 +447,22 @@ async def startup_event():
                                     globals()["_market_data_desired_refcount"] = desired_refcount
                                 except Exception:
                                     logger.debug("failed to set module-level desired_refcount")
+                                adapter = _get_market_data_adapter(app)
+                                if adapter is None:
+                                    logger.warning("Reconcile: adapter unavailable; skipping actions for this interval")
+                                    await asyncio.sleep(interval)
+                                    continue
+
                                 # compute actions
                                 try:
                                     missing_threshold = getattr(settings, "MARKET_DATA_RECONCILE_MISSING_THRESHOLD", 3)
-                                    res = reconcile_step(_market_data_adapter, desired_refcount, state, missing_threshold=missing_threshold)
+                                    res = reconcile_step(adapter, desired_refcount, state, missing_threshold=missing_threshold)
                                 except Exception:
                                     logger.exception("Reconcile step failed")
                                     res = {"to_subscribe": set(), "to_unsubscribe": set()}
 
                                 # perform subscribe/unsubscribe
-                                for tk in res.get("to_subscribe", set()):
-                                    try:
-                                        await _market_data_adapter.subscribe(tk)
-                                        logger.info("Reconcile: requested subscribe %s", str(tk)[:24])
-                                    except Exception:
-                                        logger.exception("Reconcile: subscribe failed for %s", tk)
-
-                                for tk in res.get("to_unsubscribe", set()):
-                                    try:
-                                        await _market_data_adapter.unsubscribe(tk)
-                                        logger.info("Reconcile: requested unsubscribe %s", str(tk)[:24])
-                                        state.missing_count.pop(tk, None)
-                                    except Exception:
-                                        logger.exception("Reconcile: unsubscribe failed for %s", tk)
+                                await _reconcile_subscriptions(adapter, res, state)
                                 # update telemetry gauge after reconcile actions
                                 try:
                                     _update_subs_gauge()

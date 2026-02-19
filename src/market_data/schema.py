@@ -29,8 +29,8 @@ class OrderBookSnapshot:
         bids_raw = raw.get("bids") or raw.get("buys") or []
         asks_raw = raw.get("asks") or raw.get("sells") or []
 
-        def parse_levels(arr):
-            levels = []
+        def parse_levels(arr: Any) -> List[OrderBookLevel]:
+            levels: List[OrderBookLevel] = []
             for lvl in arr:
                 try:
                     price = float(lvl.get("price") if isinstance(lvl, dict) else lvl[0])
