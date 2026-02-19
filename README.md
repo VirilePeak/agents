@@ -157,6 +157,59 @@ This repo is inteded for use with Python 3.9
    ./scripts/bash/run-docker-dev.sh
    ```
 
+
+## Trading bot safety & verification
+
+### Required environment variables
+
+Use environment variables for credentials and **never commit secrets** to git:
+
+- `POLYGON_WALLET_PRIVATE_KEY`
+- `OPENAI_API_KEY`
+- `CLOB_API_KEY` / `CLOB_SECRET` (if live CLOB auth is used)
+
+Use `.env.example` as template and keep `.env` local only.
+
+### Feature flags (safe defaults)
+
+Core optional runtime paths are feature-flagged and should remain disabled unless explicitly testing:
+
+- `MARKET_DATA_WS_ENABLED=0` (disable WS stream; default flow keeps running via existing path)
+- `MARKET_DATA_RTDS_ENABLED=0` (disable RTDS stream)
+- `DEBUG_ENDPOINTS_ENABLED=0` (disable admin/debug endpoints)
+
+Boolean env values are parsed robustly (`0/1`, `true/false`, `yes/no`).
+
+### Verification commands
+
+Run these checks locally before deploying:
+
+```bash
+pytest -q
+curl -s http://127.0.0.1:5000/market-data/metrics
+curl -s http://127.0.0.1:5000/market-data/health
+```
+
+For a default safety smoke test, run with flags off:
+
+```bash
+export MARKET_DATA_WS_ENABLED=0
+export MARKET_DATA_RTDS_ENABLED=0
+python agents/application/trade.py
+```
+
+### Health endpoint semantics (`/market-data/health`)
+
+`/market-data/health` is a **trading-readiness** health, not just process liveness:
+
+- `ok=true` means market-data path is considered ready for trading decisions.
+- `ok=false` can be expected in offline/dev scenarios (e.g., no live WS traffic yet), even when the app process is stable.
+- `ws_connected` indicates websocket connectivity status.
+- `last_msg_age_s` indicates freshness of most recent market-data message.
+- `active_subscriptions` indicates current adapter subscription count.
+
+For operational monitoring, treat API reachability + `/market-data/metrics` availability as process-level health, and `/market-data/health.ok` as readiness-to-trade.
+
 ## Architecture
 
 The Polymarket Agents architecture features modular components that can be maintained and extended by individual community members.

@@ -123,6 +123,24 @@ class PolymarketRTDSProvider(AbstractMarketDataProvider):
                 backoff = min(backoff * 2, 30.0)
         logger.info("PolymarketRTDSProvider stopped")
 
+    @staticmethod
+    def parse_raw_message(msg: dict) -> List[MarketEvent]:
+        events: List[MarketEvent] = []
+        payload = msg.get("payload") or msg
+        token = payload.get("token") or payload.get("asset") or payload.get("symbol")
+        if token:
+            ev = MarketEvent(
+                ts=time.time(),
+                type="price_change",
+                token_id=str(token),
+                best_bid=payload.get("best_bid"),
+                best_ask=payload.get("best_ask"),
+                spread_pct=None,
+                data=payload,
+            )
+            events.append(ev)
+        return events
+
 
 def _ws_is_open(ws: object) -> bool:
     """
@@ -153,15 +171,4 @@ def _ws_is_open(ws: object) -> bool:
         pass
     return False
 
-    @staticmethod
-    def parse_raw_message(msg: dict) -> List[MarketEvent]:
-        events = []
-        # Very small normalizer for testing
-        topic = msg.get("topic") or msg.get("type")
-        payload = msg.get("payload") or msg
-        token = payload.get("token") or payload.get("asset") or payload.get("symbol")
-        if token:
-            ev = MarketEvent(ts=time.time(), type="price_change", token_id=str(token), best_bid=payload.get("best_bid"), best_ask=payload.get("best_ask"), spread_pct=None, data=payload)
-            events.append(ev)
-        return events
 

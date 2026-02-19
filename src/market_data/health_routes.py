@@ -1,15 +1,39 @@
 from __future__ import annotations
 from fastapi import FastAPI, Request, HTTPException
 from typing import Any
-from src.market_data.telemetry import telemetry
-from fastapi import Request, HTTPException
-from src.config.settings import get_settings
 import asyncio
+import logging
 import time
 import httpx
-from typing import Any
-from src.market_discovery.btc_updown import find_current_btc_updown_market, NoCurrentMarket, derive_btc_updown_slug_from_signal_id
+
 from src.config.settings import get_settings
+from src.market_data.telemetry import telemetry
+from src.market_discovery.btc_updown import (
+    NoCurrentMarket,
+    derive_btc_updown_slug_from_signal_id,
+    find_current_btc_updown_market,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_adapter(request: Request):
+    """Resolve canonical adapter (app.state first, then webhook helper/global fallback)."""
+    adapter = getattr(request.app.state, "market_data_adapter", None)
+    if adapter is not None:
+        return adapter
+    try:
+        import webhook_server_fastapi as ws  # type: ignore
+
+        if getattr(ws, "_get_market_data_adapter", None):
+            adapter = ws._get_market_data_adapter(request.app)
+        if adapter is None:
+            adapter = getattr(ws, "_market_data_adapter", None)
+        if adapter is not None:
+            request.app.state.market_data_adapter = adapter
+        return adapter
+    except Exception:
+        return None
 
 
 def register(app: FastAPI) -> None:
@@ -44,8 +68,14 @@ def register(app: FastAPI) -> None:
 
         # Prefer adapter internal state for active_subscriptions to avoid divergence
         try:
-            import webhook_server_fastapi as ws  # type: ignore
-            adapter = getattr(ws, "_market_data_adapter", None)
+            adapter = getattr(app.state, "market_data_adapter", None)
+            if adapter is None:
+                import webhook_server_fastapi as ws  # type: ignore
+
+                if getattr(ws, "_get_market_data_adapter", None):
+                    adapter = ws._get_market_data_adapter(app)
+                if adapter is None:
+                    adapter = getattr(ws, "_market_data_adapter", None)
             if adapter is not None:
                 subs = set(getattr(adapter, "_subs", set()) or set())
                 active_subs = len(subs)
@@ -163,6 +193,27 @@ def register(app: FastAPI) -> None:
         clob_token_ids: list[str] = []
         subscribed_count = 0
 
+        def _sample_payload() -> dict[str, Any]:
+            unknown_sample = None
+            raw_sample = None
+            parse_error_sample = None
+            try:
+                adapter_local = getattr(request.app.state, "market_data_adapter", None)
+                if adapter_local is not None:
+                    if getattr(adapter_local, "get_unknown_sample", None):
+                        unknown_sample = adapter_local.get_unknown_sample()
+                    if getattr(adapter_local, "get_last_raw_sample", None):
+                        raw_sample = adapter_local.get_last_raw_sample()
+                    if getattr(adapter_local, "get_last_parse_error_sample", None):
+                        parse_error_sample = adapter_local.get_last_parse_error_sample()
+            except Exception:
+                pass
+            return {
+                "unknown_sample": unknown_sample,
+                "raw_sample": raw_sample,
+                "parse_error_sample": parse_error_sample,
+            }
+
         try:
             now_ts = time.time()
             if signal_id:
@@ -187,10 +238,10 @@ def register(app: FastAPI) -> None:
                 clob_token_ids = [str(x) for x in (clob or [])]
             except NoCurrentMarket as e:
                 notes.append(f"no_current_market: {e}")
-                return {"ok": False, "derived_slug": derived_slug, "notes": notes}
+                return {"ok": False, "derived_slug": derived_slug, "notes": notes, "metrics": telemetry.get_snapshot(), "subscriptions": {"active_subscriptions": 0, "tokens": []}, **_sample_payload()}
             except Exception as e:
                 notes.append(f"discovery_error: {e}")
-                return {"ok": False, "notes": notes}
+                return {"ok": False, "notes": notes, "metrics": telemetry.get_snapshot(), "subscriptions": {"active_subscriptions": 0, "tokens": []}, **_sample_payload()}
 
             # telemetry snapshot before
             snap_before = telemetry.get_snapshot()
@@ -200,22 +251,26 @@ def register(app: FastAPI) -> None:
             # perform subscribe if requested and adapter available via app.state or module globals
             adapter_subscribed = False
             try:
-                adapter = getattr(request.app.state, "market_data_adapter", None)
-                # fallback to module-level globals if state not set (for tests and legacy compatibility)
-                if adapter is None:
-                    import webhook_server_fastapi as ws  # type: ignore
-                    adapter = getattr(ws, "_market_data_adapter", None)
+                adapter = _resolve_adapter(request)
                 if adapter is None:
                     notes.append("adapter_unavailable")
+                    logger.warning("discover-subscribe: skipped subscribe because adapter unavailable")
+                elif dry_run:
+                    logger.info("discover-subscribe: dry_run enabled; skipping subscribe for market_id=%s token_count=%d", str(market_id), len(clob_token_ids))
+                elif not clob_token_ids:
+                    notes.append("no_clob_token_ids")
+                    logger.info("discover-subscribe: no tokens to subscribe for market_id=%s", str(market_id))
                 else:
-                    if not dry_run and clob_token_ids:
-                        for tk in clob_token_ids:
-                            try:
-                                await adapter.subscribe(tk)
-                            except Exception:
-                                notes.append(f"subscribe_failed:{tk[:8]}")
-                        subscribed_count = len(clob_token_ids)
-                        adapter_subscribed = True
+                    logger.info("discover-subscribe: subscribing market_id=%s token_count=%d", str(market_id), len(clob_token_ids))
+                    for tk in clob_token_ids:
+                        try:
+                            await adapter.subscribe(tk)
+                            logger.info("discover-subscribe: subscribed token=%s", str(tk)[:24])
+                        except Exception:
+                            notes.append(f"subscribe_failed:{tk[:8]}")
+                            logger.exception("discover-subscribe: subscribe failed for token=%s", str(tk)[:24])
+                    subscribed_count = len(clob_token_ids)
+                    adapter_subscribed = True
             except Exception as e:
                 notes.append(f"adapter_access_error:{e}")
 
@@ -229,18 +284,10 @@ def register(app: FastAPI) -> None:
 
             # build subscriptions snapshot best-effort
             try:
-                adapter2 = getattr(request.app.state, "market_data_adapter", None)
-                # fallback to module globals if state not set
-                if adapter2 is None:
-                    import webhook_server_fastapi as ws  # type: ignore
-                    adapter2 = getattr(ws, "_market_data_adapter", None)
-                    desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
-                    reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
-                else:
-                    # try to read module-level desired_refcount/reconcile_state as fallback too
-                    import webhook_server_fastapi as ws  # type: ignore
-                    desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
-                    reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
+                adapter2 = _resolve_adapter(request)
+                import webhook_server_fastapi as ws  # type: ignore
+                desired_refcount = getattr(ws, "_market_data_desired_refcount", {}) or {}
+                reconcile_state = getattr(ws, "_market_data_reconcile_state", None)
 
                 subs = set(getattr(adapter2, "_subs", set()) or set()) if adapter2 else set()
                 subs_list = []

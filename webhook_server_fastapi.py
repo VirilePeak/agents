@@ -132,6 +132,52 @@ _market_data_reconcile_state = None
 _market_data_desired_refcount: dict = {}
 _market_data_last_warn_ts: float = 0.0
 
+def _get_market_data_adapter(app_obj: FastAPI | None = None):
+    """Return the canonical MarketData adapter instance (app.state first, then module global)."""
+    try:
+        if app_obj is not None:
+            state = getattr(app_obj, "state", None)
+            if state is not None:
+                adapter = getattr(state, "market_data_adapter", None)
+                if adapter is not None:
+                    return adapter
+    except Exception:
+        pass
+    return globals().get("_market_data_adapter", None)
+
+
+async def _reconcile_subscriptions(adapter, reconcile_result: dict, state) -> None:
+    """Best-effort subscribe/unsubscribe executor. Safe when adapter is unavailable."""
+    to_subscribe = set(reconcile_result.get("to_subscribe", set()) or set())
+    to_unsubscribe = set(reconcile_result.get("to_unsubscribe", set()) or set())
+    if adapter is None:
+        logger.warning(
+            "Reconcile: adapter unavailable; skipping actions subscribe=%d unsubscribe=%d",
+            len(to_subscribe),
+            len(to_unsubscribe),
+        )
+        return
+
+    logger.info(
+        "Reconcile: applying actions subscribe=%d unsubscribe=%d",
+        len(to_subscribe),
+        len(to_unsubscribe),
+    )
+    for tk in to_subscribe:
+        try:
+            await adapter.subscribe(tk)
+            logger.info("Reconcile: requested subscribe token=%s", str(tk)[:24])
+        except Exception:
+            logger.exception("Reconcile: subscribe failed for %s", tk)
+
+    for tk in to_unsubscribe:
+        try:
+            await adapter.unsubscribe(tk)
+            logger.info("Reconcile: requested unsubscribe token=%s", str(tk)[:24])
+            state.missing_count.pop(tk, None)
+        except Exception:
+            logger.exception("Reconcile: unsubscribe failed for %s", tk)
+
 
 async def market_data_event_consumer():
     """
@@ -290,6 +336,12 @@ async def startup_event():
     # Initialize MarketDataAdapter (if enabled). Start idempotently and register event consumer task.
     global _market_data_adapter, _market_data_tasks
     try:
+        # Always expose canonical adapter handle on app.state (can be None)
+        try:
+            app.state.market_data_adapter = _get_market_data_adapter(app)
+        except Exception:
+            logger.debug("Could not initialize app.state.market_data_adapter")
+
         if getattr(settings, "MARKET_DATA_WS_ENABLED", True):
             if _market_data_adapter is None:
                 if MarketDataAdapterClass is None:
@@ -309,7 +361,7 @@ async def startup_event():
                 # bind adapter and telemetry to app.state for admin/debug handlers
                 try:
                     from src.market_data.telemetry import telemetry as _telemetry
-                    app.state.market_data_adapter = _market_data_adapter
+                    app.state.market_data_adapter = _get_market_data_adapter(app)
                     app.state.market_data_telemetry = _telemetry
                     import os
                     app.state.market_data_pid = os.getpid()
@@ -406,29 +458,22 @@ async def startup_event():
                                     globals()["_market_data_desired_refcount"] = desired_refcount
                                 except Exception:
                                     logger.debug("failed to set module-level desired_refcount")
+                                adapter = _get_market_data_adapter(app)
+                                if adapter is None:
+                                    logger.warning("Reconcile: adapter unavailable; skipping actions for this interval")
+                                    await asyncio.sleep(interval)
+                                    continue
+
                                 # compute actions
                                 try:
                                     missing_threshold = getattr(settings, "MARKET_DATA_RECONCILE_MISSING_THRESHOLD", 3)
-                                    res = reconcile_step(_market_data_adapter, desired_refcount, state, missing_threshold=missing_threshold)
+                                    res = reconcile_step(adapter, desired_refcount, state, missing_threshold=missing_threshold)
                                 except Exception:
                                     logger.exception("Reconcile step failed")
                                     res = {"to_subscribe": set(), "to_unsubscribe": set()}
 
                                 # perform subscribe/unsubscribe
-                                for tk in res.get("to_subscribe", set()):
-                                    try:
-                                        await _market_data_adapter.subscribe(tk)
-                                        logger.info("Reconcile: requested subscribe %s", str(tk)[:24])
-                                    except Exception:
-                                        logger.exception("Reconcile: subscribe failed for %s", tk)
-
-                                for tk in res.get("to_unsubscribe", set()):
-                                    try:
-                                        await _market_data_adapter.unsubscribe(tk)
-                                        logger.info("Reconcile: requested unsubscribe %s", str(tk)[:24])
-                                        state.missing_count.pop(tk, None)
-                                    except Exception:
-                                        logger.exception("Reconcile: unsubscribe failed for %s", tk)
+                                await _reconcile_subscriptions(adapter, res, state)
                                 # update telemetry gauge after reconcile actions
                                 try:
                                     _update_subs_gauge()
@@ -443,8 +488,8 @@ async def startup_event():
                                 except Exception:
                                     last_age = None
                                     dropped = 0
-                                subs_count = len(getattr(_market_data_adapter, "_subs", set())) if _market_data_adapter else 0
-                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(_market_data_adapter, '_started', False))), str(dropped))
+                                subs_count = len(getattr(adapter, "_subs", set())) if adapter else 0
+                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(adapter, '_started', False))), str(dropped))
                                 # message-flow verification: if we have subscriptions but no recent messages, warn once per minute
                                 try:
                                     from src.config.settings import get_settings as _get_settings
@@ -458,16 +503,16 @@ async def startup_event():
                                     if subs_count > 0 and (last_age is None) and (now_ts - float(getattr(globals(), "_market_data_last_warn_ts", 0.0)) >= 60.0):
                                         example_token = None
                                         try:
-                                            example_token = next(iter(getattr(_market_data_adapter, "_subs", set())), None)
+                                            example_token = next(iter(getattr(adapter, "_subs", set())), None)
                                         except Exception:
                                             example_token = None
                                         providers = {
-                                            "ws": bool(getattr(_market_data_adapter, "provider", None)),
-                                            "rtds": bool(getattr(_market_data_adapter, "rtds_provider", None)),
+                                            "ws": bool(getattr(adapter, "provider", None)),
+                                            "rtds": bool(getattr(adapter, "rtds_provider", None)),
                                         }
                                         logger.warning(
                                             "MarketData warning: no messages received but subscriptions>0; ws_connected=%s subs=%d last_msg_age=%s example_token=%s providers=%s",
-                                            str(bool(getattr(_market_data_adapter, "_started", False))),
+                                            str(bool(getattr(adapter, "_started", False))),
                                             subs_count,
                                             str(last_age),
                                             str(example_token),
@@ -1472,6 +1517,15 @@ def log_decision(
         logger.debug(f"[{request_id}] Decision logged: outcome={outcome}, reason={outcome_reason}")
     except Exception as e:
         logger.warning(f"[{request_id}] Failed to log decision: {e}")
+
+
+def log_signal_decision(request_id: str, decision: str, reason: str, **fields) -> None:
+    """Emit one concise decision line for accepted webhook signals."""
+    parts = [f"[{request_id}] SIGNAL DECISION: decision={decision}", f"reason={reason}"]
+    for key, value in fields.items():
+        if value is not None:
+            parts.append(f"{key}={value}")
+    logger.info(" | ".join(parts))
 
 
 def is_phase2_trade(trade: dict) -> bool:
@@ -3292,6 +3346,37 @@ async def get_state():
             "mode": get_trading_mode_str(),
         }
 
+
+@app.get("/debug/config")
+async def debug_config():
+    """Runtime config/state for troubleshooting. Hidden when debug endpoints are disabled."""
+    if not getattr(settings, "DEBUG_ENDPOINTS_ENABLED", False):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    adapter = _get_market_data_adapter(app)
+    subs = getattr(adapter, "_subs", set()) if adapter else set()
+    try:
+        active_subscriptions = len(subs)
+    except Exception:
+        active_subscriptions = 0
+
+    trading_info = get_trading_mode_info()
+    return {
+        "ok": True,
+        "trading_mode": trading_info["trading_mode_effective"],
+        "dry_run": bool(getattr(settings, "DRY_RUN", False)),
+        "paper_mode": is_paper_trading(),
+        "execution_enabled": bool(getattr(settings, "EXECUTION_ENABLED", False)),
+        "market_data_ws_enabled": bool(getattr(settings, "MARKET_DATA_WS_ENABLED", False)),
+        "market_data_rtds_enabled": bool(getattr(settings, "MARKET_DATA_RTDS_ENABLED", False)),
+        "min_confidence": int(getattr(settings, "MIN_CONFIDENCE", 0)),
+        "allow_conf_4": bool(getattr(settings, "ALLOW_CONF_4", False)),
+        "kill_switch_enabled": bool(trading_info.get("kill_switch_enabled", False)),
+        "live_allowed_now": bool(trading_info.get("live_allowed_now", False)),
+        "active_subscriptions": active_subscriptions,
+        "adapter_initialized": adapter is not None,
+    }
+
 @app.post("/test")
 def test():
     return {"ok": True, "test": "simple endpoint works"}
@@ -4188,6 +4273,7 @@ def webhook(payload: WebhookPayload):
             if settings.REQUIRE_RAWCONF:
                 _blocked_conf_missing += 1
                 logger.info(f"[{request_id}] BLOCKED: rawConf missing (REQUIRE_RAWCONF=True)")
+                log_signal_decision(request_id, "SKIP", "rawconf_missing")
                 try:
                     if confirmed_conf_key:
                         cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4206,6 +4292,7 @@ def webhook(payload: WebhookPayload):
             else:
                 _blocked_conf_missing += 1
                 logger.info(f"[{request_id}] BLOCKED: rawConf missing (MISSING_RAWCONF_ACTION=block)")
+                log_signal_decision(request_id, "SKIP", "rawconf_missing")
                 try:
                     if confirmed_conf_key:
                         cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4224,6 +4311,7 @@ def webhook(payload: WebhookPayload):
             global _blocked_conf_low
             _blocked_conf_low += 1
             logger.info(f"[{request_id}] BLOCKED: rawConf={raw_conf} < MIN_CONFIDENCE={settings.MIN_CONFIDENCE}")
+            log_signal_decision(request_id, "SKIP", "rawconf_low", raw_conf=raw_conf)
             try:
                 if confirmed_conf_key:
                     cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4244,6 +4332,7 @@ def webhook(payload: WebhookPayload):
             global _blocked_conf_high
             _blocked_conf_high += 1
             logger.info(f"[{request_id}] BLOCKED: rawConf={raw_conf} > MAX_CONFIDENCE={settings.MAX_CONFIDENCE}")
+            log_signal_decision(request_id, "SKIP", "rawconf_high", raw_conf=raw_conf)
             try:
                 if confirmed_conf_key:
                     cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4482,6 +4571,7 @@ def webhook(payload: WebhookPayload):
         
         if not exposure_check.allowed:
             logger.warning(f"[{request_id}] TRADE SKIPPED: {exposure_check.reason}")
+            log_signal_decision(request_id, "SKIP", "max_exposure", detail=exposure_check.reason)
             return {
                 "ok": True,
                 "ignored": True,
@@ -4502,6 +4592,7 @@ def webhook(payload: WebhookPayload):
         
         if not direction_allowed:
             logger.warning(f"[{request_id}] TRADE SKIPPED: {direction_reason}")
+            log_signal_decision(request_id, "SKIP", "direction_limit", detail=direction_reason)
             return {
                 "ok": True,
                 "ignored": True,
@@ -5050,6 +5141,7 @@ def webhook(payload: WebhookPayload):
             # in Datei loggen (entry_price is guaranteed to be set at this point)
             append_jsonl(settings.PAPER_LOG_PATH, would_order)
             logger.info(f"[{request_id}] PAPER LOGGED TO: {settings.PAPER_LOG_PATH}")
+            log_signal_decision(request_id, "ENTER", "paper_trade_logged", action=action, token_id=(chosen_token[:18] + "...") if chosen_token else None)
             logger.debug(f"[{request_id}] PAPER ORDER: {would_order}")
             # debug instrumentation H4 - paper trade logged
             try:
@@ -5074,6 +5166,7 @@ def webhook(payload: WebhookPayload):
             )
         else:
             logger.warning(f"[{request_id}] NO PAPER ORDER (missing token or action)")
+            log_signal_decision(request_id, "SKIP", "missing_token_or_action", action=action, has_token=bool(chosen_token))
 
         clob_raw = None
         if market:
