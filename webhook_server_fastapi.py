@@ -1519,6 +1519,15 @@ def log_decision(
         logger.warning(f"[{request_id}] Failed to log decision: {e}")
 
 
+def log_signal_decision(request_id: str, decision: str, reason: str, **fields) -> None:
+    """Emit one concise decision line for accepted webhook signals."""
+    parts = [f"[{request_id}] SIGNAL DECISION: decision={decision}", f"reason={reason}"]
+    for key, value in fields.items():
+        if value is not None:
+            parts.append(f"{key}={value}")
+    logger.info(" | ".join(parts))
+
+
 def is_phase2_trade(trade: dict) -> bool:
     """
     Prüft ob ein Trade ein Phase-2 Trade ist.
@@ -3337,6 +3346,37 @@ async def get_state():
             "mode": get_trading_mode_str(),
         }
 
+
+@app.get("/debug/config")
+async def debug_config():
+    """Runtime config/state for troubleshooting. Hidden when debug endpoints are disabled."""
+    if not getattr(settings, "DEBUG_ENDPOINTS_ENABLED", False):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    adapter = _get_market_data_adapter(app)
+    subs = getattr(adapter, "_subs", set()) if adapter else set()
+    try:
+        active_subscriptions = len(subs)
+    except Exception:
+        active_subscriptions = 0
+
+    trading_info = get_trading_mode_info()
+    return {
+        "ok": True,
+        "trading_mode": trading_info["trading_mode_effective"],
+        "dry_run": bool(getattr(settings, "DRY_RUN", False)),
+        "paper_mode": is_paper_trading(),
+        "execution_enabled": bool(getattr(settings, "EXECUTION_ENABLED", False)),
+        "market_data_ws_enabled": bool(getattr(settings, "MARKET_DATA_WS_ENABLED", False)),
+        "market_data_rtds_enabled": bool(getattr(settings, "MARKET_DATA_RTDS_ENABLED", False)),
+        "min_confidence": int(getattr(settings, "MIN_CONFIDENCE", 0)),
+        "allow_conf_4": bool(getattr(settings, "ALLOW_CONF_4", False)),
+        "kill_switch_enabled": bool(trading_info.get("kill_switch_enabled", False)),
+        "live_allowed_now": bool(trading_info.get("live_allowed_now", False)),
+        "active_subscriptions": active_subscriptions,
+        "adapter_initialized": adapter is not None,
+    }
+
 @app.post("/test")
 def test():
     return {"ok": True, "test": "simple endpoint works"}
@@ -4233,6 +4273,7 @@ def webhook(payload: WebhookPayload):
             if settings.REQUIRE_RAWCONF:
                 _blocked_conf_missing += 1
                 logger.info(f"[{request_id}] BLOCKED: rawConf missing (REQUIRE_RAWCONF=True)")
+                log_signal_decision(request_id, "SKIP", "rawconf_missing")
                 try:
                     if confirmed_conf_key:
                         cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4251,6 +4292,7 @@ def webhook(payload: WebhookPayload):
             else:
                 _blocked_conf_missing += 1
                 logger.info(f"[{request_id}] BLOCKED: rawConf missing (MISSING_RAWCONF_ACTION=block)")
+                log_signal_decision(request_id, "SKIP", "rawconf_missing")
                 try:
                     if confirmed_conf_key:
                         cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4269,6 +4311,7 @@ def webhook(payload: WebhookPayload):
             global _blocked_conf_low
             _blocked_conf_low += 1
             logger.info(f"[{request_id}] BLOCKED: rawConf={raw_conf} < MIN_CONFIDENCE={settings.MIN_CONFIDENCE}")
+            log_signal_decision(request_id, "SKIP", "rawconf_low", raw_conf=raw_conf)
             try:
                 if confirmed_conf_key:
                     cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4289,6 +4332,7 @@ def webhook(payload: WebhookPayload):
             global _blocked_conf_high
             _blocked_conf_high += 1
             logger.info(f"[{request_id}] BLOCKED: rawConf={raw_conf} > MAX_CONFIDENCE={settings.MAX_CONFIDENCE}")
+            log_signal_decision(request_id, "SKIP", "rawconf_high", raw_conf=raw_conf)
             try:
                 if confirmed_conf_key:
                     cleared = _confirmation_store.clear(confirmed_conf_key)
@@ -4527,6 +4571,7 @@ def webhook(payload: WebhookPayload):
         
         if not exposure_check.allowed:
             logger.warning(f"[{request_id}] TRADE SKIPPED: {exposure_check.reason}")
+            log_signal_decision(request_id, "SKIP", "max_exposure", detail=exposure_check.reason)
             return {
                 "ok": True,
                 "ignored": True,
@@ -4547,6 +4592,7 @@ def webhook(payload: WebhookPayload):
         
         if not direction_allowed:
             logger.warning(f"[{request_id}] TRADE SKIPPED: {direction_reason}")
+            log_signal_decision(request_id, "SKIP", "direction_limit", detail=direction_reason)
             return {
                 "ok": True,
                 "ignored": True,
@@ -5095,6 +5141,7 @@ def webhook(payload: WebhookPayload):
             # in Datei loggen (entry_price is guaranteed to be set at this point)
             append_jsonl(settings.PAPER_LOG_PATH, would_order)
             logger.info(f"[{request_id}] PAPER LOGGED TO: {settings.PAPER_LOG_PATH}")
+            log_signal_decision(request_id, "ENTER", "paper_trade_logged", action=action, token_id=(chosen_token[:18] + "...") if chosen_token else None)
             logger.debug(f"[{request_id}] PAPER ORDER: {would_order}")
             # debug instrumentation H4 - paper trade logged
             try:
@@ -5119,6 +5166,7 @@ def webhook(payload: WebhookPayload):
             )
         else:
             logger.warning(f"[{request_id}] NO PAPER ORDER (missing token or action)")
+            log_signal_decision(request_id, "SKIP", "missing_token_or_action", action=action, has_token=bool(chosen_token))
 
         clob_raw = None
         if market:
