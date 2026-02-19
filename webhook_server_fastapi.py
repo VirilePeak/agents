@@ -148,21 +148,32 @@ def _get_market_data_adapter(app_obj: FastAPI | None = None):
 
 async def _reconcile_subscriptions(adapter, reconcile_result: dict, state) -> None:
     """Best-effort subscribe/unsubscribe executor. Safe when adapter is unavailable."""
+    to_subscribe = set(reconcile_result.get("to_subscribe", set()) or set())
+    to_unsubscribe = set(reconcile_result.get("to_unsubscribe", set()) or set())
     if adapter is None:
-        logger.warning("Reconcile: market-data adapter unavailable, skipping subscribe/unsubscribe this interval")
+        logger.warning(
+            "Reconcile: adapter unavailable; skipping actions subscribe=%d unsubscribe=%d",
+            len(to_subscribe),
+            len(to_unsubscribe),
+        )
         return
 
-    for tk in reconcile_result.get("to_subscribe", set()):
+    logger.info(
+        "Reconcile: applying actions subscribe=%d unsubscribe=%d",
+        len(to_subscribe),
+        len(to_unsubscribe),
+    )
+    for tk in to_subscribe:
         try:
             await adapter.subscribe(tk)
-            logger.info("Reconcile: requested subscribe %s", str(tk)[:24])
+            logger.info("Reconcile: requested subscribe token=%s", str(tk)[:24])
         except Exception:
             logger.exception("Reconcile: subscribe failed for %s", tk)
 
-    for tk in reconcile_result.get("to_unsubscribe", set()):
+    for tk in to_unsubscribe:
         try:
             await adapter.unsubscribe(tk)
-            logger.info("Reconcile: requested unsubscribe %s", str(tk)[:24])
+            logger.info("Reconcile: requested unsubscribe token=%s", str(tk)[:24])
             state.missing_count.pop(tk, None)
         except Exception:
             logger.exception("Reconcile: unsubscribe failed for %s", tk)
@@ -477,8 +488,8 @@ async def startup_event():
                                 except Exception:
                                     last_age = None
                                     dropped = 0
-                                subs_count = len(getattr(_market_data_adapter, "_subs", set())) if _market_data_adapter else 0
-                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(_market_data_adapter, '_started', False))), str(dropped))
+                                subs_count = len(getattr(adapter, "_subs", set())) if adapter else 0
+                                logger.info("MarketData reconcile heartbeat: active_subscriptions=%d, last_msg_age_s=%s, ws_connected=%s, dropped_total=%s", subs_count, str(last_age), str(bool(getattr(adapter, '_started', False))), str(dropped))
                                 # message-flow verification: if we have subscriptions but no recent messages, warn once per minute
                                 try:
                                     from src.config.settings import get_settings as _get_settings
@@ -492,16 +503,16 @@ async def startup_event():
                                     if subs_count > 0 and (last_age is None) and (now_ts - float(getattr(globals(), "_market_data_last_warn_ts", 0.0)) >= 60.0):
                                         example_token = None
                                         try:
-                                            example_token = next(iter(getattr(_market_data_adapter, "_subs", set())), None)
+                                            example_token = next(iter(getattr(adapter, "_subs", set())), None)
                                         except Exception:
                                             example_token = None
                                         providers = {
-                                            "ws": bool(getattr(_market_data_adapter, "provider", None)),
-                                            "rtds": bool(getattr(_market_data_adapter, "rtds_provider", None)),
+                                            "ws": bool(getattr(adapter, "provider", None)),
+                                            "rtds": bool(getattr(adapter, "rtds_provider", None)),
                                         }
                                         logger.warning(
                                             "MarketData warning: no messages received but subscriptions>0; ws_connected=%s subs=%d last_msg_age=%s example_token=%s providers=%s",
-                                            str(bool(getattr(_market_data_adapter, "_started", False))),
+                                            str(bool(getattr(adapter, "_started", False))),
                                             subs_count,
                                             str(last_age),
                                             str(example_token),
